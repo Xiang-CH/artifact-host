@@ -6,7 +6,7 @@ class Service(unittest.TestCase):
   p=private_app.test_client(); v=public_app.test_client(); _,key=token(); h={'Authorization':'Bearer '+key}
   self.assertEqual(p.post('/api/artifacts',data=b'x').status_code,401)
   r=p.post('/api/artifacts?name=README.md',data=b'# Report\n<script>alert(1)</script>',headers=h); self.assertEqual(r.status_code,201)
-  ident=r.json['id']; page=v.get('/s/'+ident+'/'); self.assertEqual(page.status_code,200); self.assertNotIn(b'<script>',page.data)
+  ident=r.json['id']; self.assertIn('readme-', r.json['slug']); self.assertEqual(v.get('/s/'+ident+'/'+r.json['slug']+'/').status_code,200); page=v.get('/s/'+ident+'/'); self.assertEqual(page.status_code,200); self.assertNotIn(b'<script>',page.data)
   _,other=token(); self.assertEqual(p.delete('/api/artifacts/'+ident,headers={'Authorization':'Bearer '+other}).status_code,403)
   self.assertEqual(p.delete('/api/artifacts/'+ident,headers=h).status_code,204); self.assertEqual(v.get('/s/'+ident+'/').status_code,404)
   r=p.post('/api/artifacts?name=index.html',data=b'<script>1</script>',headers=h); page=v.get('/s/'+r.json['id']+'/'); self.assertIn('sandbox allow-scripts',page.headers['Content-Security-Policy'])

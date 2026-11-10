@@ -1,4 +1,4 @@
-import os, sqlite3, secrets, hashlib, json, io, zipfile, shutil, time
+import os, sqlite3, secrets, hashlib, json, io, zipfile, shutil, time, re, unicodedata
 from pathlib import Path, PurePosixPath
 from flask import Flask, request, abort, jsonify, send_file, Response
 import markdown, bleach
@@ -13,6 +13,14 @@ def db():
     return c
 with db() as c:
     c.executescript('CREATE TABLE IF NOT EXISTS tokens(id TEXT PRIMARY KEY, hash TEXT, owner INTEGER); CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, owner TEXT, entry TEXT, size INTEGER, expires REAL, revoked INTEGER DEFAULT 0);')
+    if 'slug' not in {r[1] for r in c.execute('PRAGMA table_info(artifacts)')}:
+        c.execute('ALTER TABLE artifacts ADD COLUMN slug TEXT')
+    c.execute('CREATE UNIQUE INDEX IF NOT EXISTS artifact_slug ON artifacts(slug)')
+def make_slug(title):
+    title=unicodedata.normalize('NFKD',title).encode('ascii','ignore').decode().lower()
+    return (re.sub(r'[^a-z0-9]+','-',title).strip('-')[:64] or 'artifact')+'-'+secrets.token_hex(6)
+def share_url(row):
+    return PUBLIC+'/s/'+row['id']+'/'+(row['slug']+'/' if row['slug'] else '')
 def digest(s): return hashlib.sha256(s.encode()).hexdigest()
 def token(owner=False):
     key=secrets.token_urlsafe(32); ident=secrets.token_hex(8)
@@ -45,7 +53,7 @@ def create_app(private=False):
         def listing():
             a=auth()
             with db() as c: rows=c.execute('SELECT * FROM artifacts'+('' if a['owner'] else ' WHERE owner=?'),() if a['owner'] else (a['id'],)).fetchall()
-            return jsonify([dict(r) for r in rows])
+            return jsonify([dict(r, url=share_url(r)) for r in rows])
         @app.route('/api/tokens',methods=['GET','POST'])
         def tokens():
             if not auth()['owner']: abort(403)
@@ -60,6 +68,7 @@ def create_app(private=False):
         @app.post('/api/artifacts')
         def upload():
             a=auth(); ident=secrets.token_urlsafe(32); dest=ROOT/ident
+            slug=make_slug(request.args.get('slug') or Path(request.args.get('name','artifact')).stem)
             # Serialize admission, extraction and commit across all workers.
             with db() as c:
                 c.execute('BEGIN IMMEDIATE')
@@ -85,10 +94,10 @@ def create_app(private=False):
                         p=dest/entry; p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(raw)
                     if not (dest/entry).is_file(): abort(400)
                     expiry=float(request.args['expires']) if 'expires' in request.args else None
-                    c.execute('INSERT INTO artifacts(id,owner,entry,size,expires) VALUES(?,?,?,?,?)',(ident,a['id'],entry,size,expiry))
+                    c.execute('INSERT INTO artifacts(id,owner,entry,size,expires,slug) VALUES(?,?,?,?,?,?)',(ident,a['id'],entry,size,expiry,slug))
                 except BaseException:
                     shutil.rmtree(dest,ignore_errors=True); raise
-            return {'id':ident,'url':PUBLIC+'/s/'+ident+'/'},201
+            return {'id':ident,'slug':slug,'url':PUBLIC+'/s/'+ident+'/'+slug+'/'},201
         @app.delete('/api/artifacts/<ident>')
         def delete(ident):
             a=auth()
@@ -106,6 +115,10 @@ def create_app(private=False):
         def serve(ident,name):
             with db() as c: r=c.execute('SELECT * FROM artifacts WHERE id=?',(ident,)).fetchone()
             if not r or r['revoked'] or (r['expires'] is not None and r['expires']<=time.time()): abort(404)
+            if r['slug'] and name:
+                if name == r['slug']+'/': name=None
+                elif name.startswith(r['slug']+'/'): name=name[len(r['slug'])+1:]
+                else: abort(404)
             p=ROOT/ident/safe(name or r['entry'])
             if not p.is_file(): abort(404)
             ext=p.suffix.lower()

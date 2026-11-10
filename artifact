@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import argparse, urllib.request, urllib.parse, os, io, zipfile, pathlib, json
-p=argparse.ArgumentParser(); p.add_argument('path'); p.add_argument('--api',default=os.environ.get('ARTIFACT_API','http://127.0.0.1:8791')); a=p.parse_args(); path=pathlib.Path(a.path)
+p=argparse.ArgumentParser(); p.add_argument('path'); p.add_argument('--api',default=os.environ.get('ARTIFACT_API','http://127.0.0.1:8791')); p.add_argument('--slug', default=''); a=p.parse_args(); path=pathlib.Path(a.path)
 q={'name':path.name}
 if path.is_dir():
  b=io.BytesIO()
@@ -10,5 +10,6 @@ if path.is_dir():
    if f.is_file(): z.write(f,f.relative_to(path))
  data=b.getvalue(); q={'bundle':'1'}
 else: data=path.read_bytes()
+q['slug']=a.slug
 r=urllib.request.Request(a.api+'/api/artifacts?'+urllib.parse.urlencode(q),data=data,headers={'Authorization':'Bearer '+os.environ['ARTIFACT_TOKEN'],'Content-Type':'application/octet-stream'})
 print(json.load(urllib.request.urlopen(r))['url'])
