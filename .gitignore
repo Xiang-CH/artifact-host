@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.py[cod]
+/data/
+.env
+.env.*
+owner.json
+*.db
+*.db-*
+.DS_Store
