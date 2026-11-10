@@ -1,5 +1,5 @@
-Flask==3.1.2
+Flask==3.1.3
 Markdown==3.9
-bleach==6.2.0
-Pygments==2.19.2
+nh3==0.3.7
+Pygments==2.20.0
 gunicorn==23.0.0

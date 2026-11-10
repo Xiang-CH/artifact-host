@@ -1,137 +1,299 @@
-import os, sqlite3, secrets, hashlib, json, io, zipfile, shutil, time, re, unicodedata
-from pathlib import Path, PurePosixPath
-from flask import Flask, request, abort, jsonify, send_file, Response
-import markdown, bleach
-ROOT = Path(os.environ.get('ARTIFACT_DATA', './data')).resolve()
-ROOT.mkdir(parents=True, exist_ok=True)
-LIMIT = int(os.environ.get('UPLOAD_LIMIT', 50*1024*1024))
-BUDGET = int(os.environ.get('STORAGE_BUDGET', 3*1024**3))
+"""Separate private management and public capability applications."""
+import fcntl
+import ipaddress
+import json
+import os
+import re
+import secrets
+import shutil
+import sqlite3
+import time
+import zipfile
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from flask import Flask, Response, abort, jsonify, request, send_file
+from werkzeug.exceptions import HTTPException
+
+from artifact_host import storage
+from artifact_host.rendering import CACHE_DIR, render_bundle
+
+ROOT = storage.ROOT
 PUBLIC = os.environ.get('PUBLIC_URL', 'http://127.0.0.1:8792').rstrip('/')
-def db():
-    c = sqlite3.connect(ROOT/'state.db', timeout=60)
-    c.row_factory = sqlite3.Row
-    return c
-with db() as c:
-    c.executescript('CREATE TABLE IF NOT EXISTS tokens(id TEXT PRIMARY KEY, hash TEXT, owner INTEGER); CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, owner TEXT, entry TEXT, size INTEGER, expires REAL, revoked INTEGER DEFAULT 0);')
-    if 'slug' not in {r[1] for r in c.execute('PRAGMA table_info(artifacts)')}:
-        c.execute('ALTER TABLE artifacts ADD COLUMN slug TEXT')
-    c.execute('CREATE UNIQUE INDEX IF NOT EXISTS artifact_slug ON artifacts(slug)')
-def make_slug(title):
-    title=unicodedata.normalize('NFKD',title).encode('ascii','ignore').decode().lower()
-    return (re.sub(r'[^a-z0-9]+','-',title).strip('-')[:64] or 'artifact')+'-'+secrets.token_hex(6)
-def share_url(row):
-    return PUBLIC+'/s/'+row['id']+'/'+(row['slug']+'/' if row['slug'] else '')
-def digest(s): return hashlib.sha256(s.encode()).hexdigest()
+PUBLIC_PARTS = urlsplit(PUBLIC)
+if PUBLIC_PARTS.scheme not in ('http', 'https') or not PUBLIC_PARTS.hostname or PUBLIC_PARTS.username or PUBLIC_PARTS.password or PUBLIC_PARTS.path or PUBLIC_PARTS.query or PUBLIC_PARTS.fragment:
+    raise RuntimeError('PUBLIC_URL must be a dedicated HTTP(S) origin')
+# The service ships loopback-only; production read hosts must use HTTPS.
+if PUBLIC_PARTS.scheme == 'http' and PUBLIC_PARTS.hostname not in ('127.0.0.1', 'localhost', '::1'):
+    raise RuntimeError('Public non-loopback URLs require HTTPS')
+storage.initialize()
+
+ARTIFACT_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline' 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
 def token(owner=False):
-    key=secrets.token_urlsafe(32); ident=secrets.token_hex(8)
-    with db() as c: c.execute('INSERT INTO tokens VALUES(?,?,?)',(ident,digest(key),int(owner)))
-    return ident,key
-def auth():
-    with db() as c: row=c.execute('SELECT * FROM tokens WHERE hash=?',(digest(request.headers.get('Authorization','').removeprefix('Bearer ')),)).fetchone()
-    if not row: abort(401)
+    with storage.database() as connection:
+        connection.execute('BEGIN IMMEDIATE')
+        value = storage.issue_token(connection, owner)
+        return value['id'], value['token']
+
+def share_url(row):
+    return PUBLIC + '/s/' + row['id'] + '/' + (row['slug'] + '/' if row['slug'] else '')
+
+def credential():
+    header = request.headers.get('Authorization', '')
+    if not re.fullmatch(r'Bearer [A-Za-z0-9_-]{43}', header):
+        abort(401)
+    return header[7:]
+
+def authenticate(connection, secret, owner=False):
+    row = connection.execute('SELECT * FROM tokens WHERE hash=?', (storage.digest(secret),)).fetchone()
+    if row is None:
+        abort(401)
+    if owner and not row['owner']:
+        abort(403)
     return row
-def safe(name):
-    p=PurePosixPath(name)
-    if not name or '\\' in name or p.is_absolute() or any(x in ('..','.') for x in name.split('/')) or any(ord(x)<32 for x in name): abort(400)
-    return str(p)
+
+def file_name(name):
+    name = storage.safe_path(name)
+    if any(part.startswith('.artifact-') for part in name.split('/')):
+        raise storage.InvalidUpload('Reserved file path')
+    return name
+
 def create_app(private=False):
-    app=Flask(__name__); app.config['MAX_CONTENT_LENGTH']=LIMIT
+    app = Flask(__name__)
+    app.config.update(MAX_CONTENT_LENGTH=storage.LIMIT, TRUSTED_HOSTS=(
+        os.environ.get('PRIVATE_HOSTS', 'localhost,127.0.0.1,[::1]').split(',') if private else [PUBLIC_PARTS.hostname]))
+
+    @app.before_request
+    def boundary():
+        if private:
+            try:
+                address = ipaddress.ip_address(request.remote_addr or '')
+            except ValueError:
+                abort(403)
+            if not address.is_loopback:
+                abort(403)
+            # No cookies/CORS auth. Reject browser cross-origin requests explicitly.
+            origin = request.headers.get('Origin')
+            if origin and origin != request.host_url.rstrip('/'):
+                abort(403)
+            if request.headers.get('Sec-Fetch-Site') == 'cross-site':
+                abort(403)
+
     @app.after_request
-    def headers(r):
-        r.headers['Cache-Control']='no-store'
-        r.headers['Referrer-Policy']='no-referrer'
-        r.headers['X-Content-Type-Options']='nosniff'
-        r.headers['Content-Security-Policy']="sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline' 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none'"
-        return r
+    def headers(response):
+        response.headers['Cache-Control'] = 'no-store, max-age=0'
+        response.headers['Referrer-Policy'] = 'no-referrer'
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=(), payment=()'
+        response.headers['Content-Security-Policy'] = (
+            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" if private else ARTIFACT_CSP)
+        response.headers['X-Frame-Options'] = 'DENY'
+        return response
+
+    @app.errorhandler(Exception)
+    def error_response(error):
+        # Never serialize exceptions or request paths: they can contain capabilities.
+        if isinstance(error, HTTPException):
+            return jsonify(error=error.name), error.code
+        if isinstance(error, storage.QuotaExceeded):
+            return jsonify(error='Upload or storage limit exceeded'), 413
+        if isinstance(error, (storage.InvalidUpload, zipfile.BadZipFile, UnicodeError, ValueError)):
+            return jsonify(error='Invalid upload'), 400
+        if isinstance(error, sqlite3.OperationalError):
+            return jsonify(error='Storage busy or unavailable'), 503
+        return jsonify(error='Storage operation failed'), 500
+
     @app.get('/health')
-    def health(): return {'ok':True}
+    def health():
+        with storage.database() as connection:
+            connection.execute('SELECT 1').fetchone()
+        return {'ok': True}
+
     if private:
         @app.get('/')
         def dashboard():
-            return Response('''<h1>Artifact management</h1><p>Links can be forwarded. Downloads cannot be recalled.</p><input id="key" type="password" placeholder="Owner token"><button onclick="load()">List artifacts</button><pre id="out"></pre><script>async function load(){out.textContent=JSON.stringify(await (await fetch('/api/artifacts',{headers:{Authorization:'Bearer '+key.value}})).json(),null,2)}</script>''',mimetype='text/html')
+            return Response((Path(__file__).parent / 'dashboard.html').read_text(), mimetype='text/html')
+
+        @app.get('/dashboard.js')
+        def dashboard_script():
+            return send_file(Path(__file__).parent / 'dashboard.js', mimetype='text/javascript', conditional=False)
+
         @app.get('/api/artifacts')
         def listing():
-            a=auth()
-            with db() as c: rows=c.execute('SELECT * FROM artifacts'+('' if a['owner'] else ' WHERE owner=?'),() if a['owner'] else (a['id'],)).fetchall()
-            return jsonify([dict(r, url=share_url(r)) for r in rows])
-        @app.route('/api/tokens',methods=['GET','POST'])
+            with storage.database() as connection:
+                agent = authenticate(connection, credential())
+                try:
+                    offset = max(0, int(request.args.get('offset', 0)))
+                except ValueError:
+                    abort(400)
+                query = 'SELECT * FROM artifacts'
+                params = ()
+                if not agent['owner']:
+                    query += ' WHERE owner=?'
+                    params = (agent['id'],)
+                rows = connection.execute(query + ' ORDER BY rowid LIMIT 100 OFFSET ?', params + (offset,)).fetchall()
+                return jsonify([dict(row, url=share_url(row)) for row in rows])
+
+        @app.route('/api/tokens', methods=['GET', 'POST'])
         def tokens():
-            if not auth()['owner']: abort(403)
-            if request.method=='POST':
-                ident,key=token(); return {'id':ident,'token':key}
-            with db() as c: return jsonify([dict(r) for r in c.execute('SELECT id,owner FROM tokens')])
-        @app.delete('/api/tokens/<ident>')
-        def revoke_token(ident):
-            if not auth()['owner']: abort(403)
-            with db() as c: c.execute('DELETE FROM tokens WHERE id=? AND owner=0',(ident,))
-            return '',204
+            with storage.database() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                authenticate(connection, credential(), owner=True)
+                if request.method == 'POST':
+                    if connection.execute('SELECT count(*) FROM tokens').fetchone()[0] >= 1000:
+                        abort(413)
+                    return storage.issue_token(connection), 201
+                return jsonify([dict(row) for row in connection.execute('SELECT id,owner FROM tokens')])
+
+        @app.delete('/api/tokens/<identifier>')
+        def revoke_token(identifier):
+            with storage.database() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                authenticate(connection, credential(), owner=True)
+                result = connection.execute('DELETE FROM tokens WHERE id=? AND owner=0', (identifier,))
+                if not result.rowcount:
+                    abort(404)
+            return '', 204
+
         @app.post('/api/artifacts')
         def upload():
-            a=auth(); ident=secrets.token_urlsafe(32); dest=ROOT/ident
-            slug=make_slug(request.args.get('slug') or Path(request.args.get('name','artifact')).stem)
-            # Serialize admission, extraction and commit across all workers.
-            with db() as c:
-                c.execute('BEGIN IMMEDIATE')
-                used=c.execute('SELECT coalesce(sum(size),0) FROM artifacts').fetchone()[0]
-                dest.mkdir(); size=0
+            secret = credential()
+            with storage.database() as connection:
+                authenticate(connection, secret)
+            expiry = storage.expiry_value(request.args.get('expires'))
+            slug = storage.make_slug(request.args.get('slug') or Path(request.args.get('name', 'artifact')).stem)
+            identifier = secrets.token_urlsafe(32)
+            entry = file_name(request.args.get('name', 'download.bin'))
+            if request.args.get('bundle', '0') not in ('0', '1'):
+                abort(400)
+            bundle = request.args.get('bundle') == '1'
+            lock = (ROOT / '.upload.lock').open('a')
+            try:
                 try:
-                    raw=request.get_data(cache=False)
-                    if request.args.get('bundle')=='1':
-                        z=zipfile.ZipFile(io.BytesIO(raw)); files=z.infolist()
-                        if len(files)>2000: abort(413)
-                        for f in files:
-                            name=safe(f.filename.rstrip('/'))
-                            if (f.external_attr>>16)&0o170000 == 0o120000: abort(400)
-                            if f.is_dir(): continue
-                            size+=f.file_size
-                            if size>LIMIT or used+size>BUDGET: abort(413)
-                            path=dest/name; path.parent.mkdir(parents=True,exist_ok=True)
-                            with z.open(f) as src, path.open('wb') as out: shutil.copyfileobj(src,out)
-                        entry='index.html' if (dest/'index.html').is_file() else 'README.md'
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    abort(429)
+                # One in-flight upload across processes. Recover crash leftovers.
+                staging_root = ROOT / '.staging'
+                if staging_root.exists():
+                    shutil.rmtree(staging_root)
+                staging_root.mkdir(mode=0o700)
+                staging = staging_root / identifier
+                staging.mkdir(mode=0o700)
+                raw = staging / 'body'
+                with raw.open('xb') as output:
+                    storage.copy_limited(request.stream, output, min(storage.LIMIT, max(0, storage.BUDGET - storage.disk_usage())))
+                # No database lock is held while receiving a potentially slow body.
+                with storage.database() as connection:
+                    connection.execute('BEGIN IMMEDIATE')
+                    agent = authenticate(connection, secret)
+                    used = storage.disk_usage() - storage.tree_usage(staging_root)
+                    capacity = storage.BUDGET - used - 16384
+                    count = connection.execute('SELECT count(*) FROM artifacts').fetchone()[0]
+                    if count >= 10000:
+                        raise storage.QuotaExceeded('Artifact record limit exceeded')
+                    content = staging / 'content'
+                    content.mkdir(mode=0o700)
+                    if bundle:
+                        entry, _ = storage.extract_bundle(raw, content, capacity - storage.file_charge(raw.stat().st_size))
+                        raw.unlink()
                     else:
-                        entry=safe(request.args.get('name','download.bin')); size=len(raw)
-                        if used+size>BUDGET: abort(413)
-                        p=dest/entry; p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes(raw)
-                    if not (dest/entry).is_file(): abort(400)
-                    expiry=float(request.args['expires']) if 'expires' in request.args else None
-                    c.execute('INSERT INTO artifacts(id,owner,entry,size,expires,slug) VALUES(?,?,?,?,?,?)',(ident,a['id'],entry,size,expiry,slug))
-                except BaseException:
-                    shutil.rmtree(dest,ignore_errors=True); raise
-            return {'id':ident,'slug':slug,'url':PUBLIC+'/s/'+ident+'/'+slug+'/'},201
-        @app.delete('/api/artifacts/<ident>')
-        def delete(ident):
-            a=auth()
-            with db() as c:
-                c.execute('BEGIN IMMEDIATE'); r=c.execute('SELECT * FROM artifacts WHERE id=?',(ident,)).fetchone()
-                if not r: abort(404)
-                if not a['owner'] and r['owner']!=a['id']: abort(403)
-                c.execute('UPDATE artifacts SET revoked=1 WHERE id=?',(ident,))
-                shutil.rmtree(ROOT/ident,ignore_errors=True)
-                c.execute('UPDATE artifacts SET size=0 WHERE id=?',(ident,))
-            return '',204
+                        if storage.file_charge(raw.stat().st_size) + 8192 > capacity:
+                            raise storage.QuotaExceeded()
+                        target = content / entry
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        raw.rename(target)
+                    render_bundle(content, capacity)
+                    size = storage.tree_usage(content)
+                    if size > capacity:
+                        raise storage.QuotaExceeded()
+                    content.rename(ROOT / identifier)
+                    try:
+                        connection.execute('INSERT INTO artifacts(id,owner,entry,size,expires,slug) VALUES(?,?,?,?,?,?)',
+                            (identifier, agent['id'], entry, size, expiry, slug))
+                        if storage.disk_usage() - storage.tree_usage(staging_root) > storage.BUDGET:
+                            raise storage.QuotaExceeded('Metadata exceeds storage budget')
+                    except BaseException:
+                        shutil.rmtree(ROOT / identifier)
+                        raise
+                return {'id': identifier, 'slug': slug, 'url': PUBLIC + '/s/' + identifier + '/' + slug + '/'}, 201
+            finally:
+                # Do not remove another uploader's staging after failed flock.
+                try:
+                    if 'staging_root' in locals() and staging_root.exists():
+                        shutil.rmtree(staging_root)
+                finally:
+                    lock.close()
+
+        @app.delete('/api/artifacts/<identifier>')
+        def delete(identifier):
+            if not storage.ID_PATTERN.fullmatch(identifier):
+                abort(404)
+            with storage.database() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                agent = authenticate(connection, credential())
+                row = connection.execute('SELECT * FROM artifacts WHERE id=?', (identifier,)).fetchone()
+                if row is None:
+                    abort(404)
+                if not agent['owner'] and row['owner'] != agent['id']:
+                    abort(403)
+                connection.execute('UPDATE artifacts SET revoked=1 WHERE id=?', (identifier,))
+            # Revocation commits even if disk cleanup fails. Retained files count
+            # against physical admission, and a repeated DELETE retries cleanup.
+            with storage.database() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                authenticate(connection, credential())
+                path = ROOT / identifier
+                if path.exists():
+                    shutil.rmtree(path)
+                connection.execute('UPDATE artifacts SET size=0 WHERE id=?', (identifier,))
+            return '', 204
     else:
-        @app.get('/s/<ident>/',defaults={'name':None})
-        @app.get('/s/<ident>/<path:name>')
-        def serve(ident,name):
-            with db() as c: r=c.execute('SELECT * FROM artifacts WHERE id=?',(ident,)).fetchone()
-            if not r or r['revoked'] or (r['expires'] is not None and r['expires']<=time.time()): abort(404)
-            if r['slug'] and name:
-                if name == r['slug']+'/': name=None
-                elif name.startswith(r['slug']+'/'): name=name[len(r['slug'])+1:]
-                else: abort(404)
-            p=ROOT/ident/safe(name or r['entry'])
-            if not p.is_file(): abort(404)
-            ext=p.suffix.lower()
-            if ext=='.md':
-                content=markdown.markdown(p.read_text(),extensions=['tables','fenced_code','codehilite'])
-                content=bleach.clean(content,tags=set(bleach.sanitizer.ALLOWED_TAGS)|{'h1','h2','h3','h4','h5','h6','p','pre','code','div','span','table','thead','tbody','tr','td','th','img','hr','br'},attributes={'*':['class'],'a':['href','title'],'img':['src','alt']},protocols=['https','http'])
-                from pygments.formatters import HtmlFormatter
-                return Response('<style>'+HtmlFormatter().get_style_defs()+ '</style>'+content,mimetype='text/html')
-            types={'.html':'text/html','.css':'text/css','.js':'text/javascript','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.pdf':'application/pdf'}
-            return send_file(p,mimetype=types.get(ext,'application/octet-stream'),as_attachment=ext not in types,download_name=p.name)
+        @app.get('/s/<identifier>/', defaults={'name': None})
+        @app.get('/s/<identifier>/<path:name>')
+        def serve(identifier, name):
+            if not storage.ID_PATTERN.fullmatch(identifier):
+                abort(404)
+            with storage.database() as connection:
+                row = connection.execute('SELECT * FROM artifacts WHERE id=?', (identifier,)).fetchone()
+            if row is None or row['revoked'] or (row['expires'] is not None and row['expires'] <= time.time()):
+                abort(404)
+            if row['slug'] and name:
+                if name == row['slug'] + '/':
+                    name = None
+                elif name.startswith(row['slug'] + '/'):
+                    name = name[len(row['slug']) + 1:]
+                else:
+                    abort(404)
+            name = name or row['entry']
+            try:
+                file_name(name)
+                source = storage.open_artifact(identifier, name)
+                extension = Path(name).suffix.lower()
+                if extension == '.md':
+                    try:
+                        rendered = storage.open_artifact(identifier, CACHE_DIR + '/' + name)
+                    except OSError:
+                        rendered = None
+                    if rendered is not None:
+                        source.close()
+                        response = send_file(rendered, mimetype='text/html', conditional=False, etag=False)
+                        response.call_on_close(rendered.close)
+                        return response
+                types = {'.html':'text/html', '.css':'text/css', '.js':'text/javascript', '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.gif':'image/gif', '.webp':'image/webp', '.pdf':'application/pdf'}
+                response = send_file(source, mimetype=types.get(extension, 'application/octet-stream'),
+                    as_attachment=extension not in types, download_name=Path(name).name, conditional=False, etag=False)
+                response.call_on_close(source.close)
+                return response
+            except (OSError, storage.InvalidUpload):
+                abort(404)
     return app
-private_app=create_app(True)
-public_app=create_app(False)
-if __name__=='__main__':
+
+private_app = create_app(True)
+public_app = create_app(False)
+if __name__ == '__main__':
     import sys
-    if sys.argv[1:] == ['init']: print(json.dumps(dict(zip(('id','token'),token(True)))))
+    if sys.argv[1:] == ['init']:
+        identifier, secret = token(True)
+        print(json.dumps({'id': identifier, 'token': secret}))

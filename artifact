@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-import argparse, urllib.request, urllib.parse, os, io, zipfile, pathlib, json
-p=argparse.ArgumentParser(); p.add_argument('path'); p.add_argument('--api',default=os.environ.get('ARTIFACT_API','http://127.0.0.1:8791')); p.add_argument('--slug', default=''); a=p.parse_args(); path=pathlib.Path(a.path)
-q={'name':path.name}
-if path.is_dir():
- b=io.BytesIO()
- with zipfile.ZipFile(b,'w',zipfile.ZIP_DEFLATED) as z:
-  for f in path.rglob('*'):
-   if f.is_symlink(): raise SystemExit('Symlinks are not supported')
-   if f.is_file(): z.write(f,f.relative_to(path))
- data=b.getvalue(); q={'bundle':'1'}
-else: data=path.read_bytes()
-q['slug']=a.slug
-r=urllib.request.Request(a.api+'/api/artifacts?'+urllib.parse.urlencode(q),data=data,headers={'Authorization':'Bearer '+os.environ['ARTIFACT_TOKEN'],'Content-Type':'application/octet-stream'})
-print(json.load(urllib.request.urlopen(r))['url'])
+"""Upload or revoke artifacts using a dedicated agent bearer token."""
+import argparse
+from pathlib import Path
+from urllib.parse import quote
+from artifact_host.client import api, upload, read_upload, ClientError
+
+parser = argparse.ArgumentParser()
+parser.add_argument('path', nargs='?', help='File or bundle directory to upload')
+parser.add_argument('--api', help='HTTPS API origin, or loopback HTTP through SSH')
+parser.add_argument('--slug', default='')
+parser.add_argument('--expires', type=float, help='Expiry Unix timestamp')
+parser.add_argument('--revoke', metavar='ARTIFACT_ID', help='Revoke and delete an owned artifact')
+args = parser.parse_args()
+if bool(args.path) == bool(args.revoke):
+    parser.error('Supply a path or --revoke ARTIFACT_ID')
+try:
+    if args.revoke:
+        api('DELETE', '/api/artifacts/' + quote(args.revoke, safe=''), endpoint=args.api)
+        print('Artifact revoked')
+    else:
+        content, bundle = read_upload(args.path)
+        print(upload(Path(args.path).name, content, args.slug, bundle, args.expires, args.api)['url'])
+except (ClientError, OSError):
+    parser.exit(1, 'Artifact operation failed. Check the token, endpoint, input, and server limits.\n')

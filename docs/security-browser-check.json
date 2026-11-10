@@ -1,0 +1,21 @@
+{
+  "sandbox": {
+    "inline": true,
+    "storageBlocked": true,
+    "cookiesBlocked": true,
+    "fetchBlocked": true,
+    "externalScript": true
+  },
+  "relative_image": true,
+  "interactive": true,
+  "markdown": {
+    "heading": "Browser Markdown",
+    "image": 1,
+    "xss": false
+  },
+  "token_created_once": true,
+  "dashboard_no_persistence": true,
+  "token_revoked": true,
+  "artifact_revoked": true,
+  "forgotten": true
+}
