@@ -61,8 +61,17 @@ def file_name(name):
 
 def create_app(private=False):
     app = Flask(__name__)
-    app.config.update(MAX_CONTENT_LENGTH=storage.LIMIT, TRUSTED_HOSTS=(
-        os.environ.get('PRIVATE_HOSTS', 'localhost,127.0.0.1,[::1]').split(',') if private else [PUBLIC_PARTS.hostname]))
+    private_origin = os.environ.get('PRIVATE_ORIGIN')
+    private_hosts = os.environ.get('PRIVATE_HOSTS', 'localhost,127.0.0.1,[::1]').split(',')
+    if private_origin:
+        origin_parts = urlsplit(private_origin)
+        if (origin_parts.scheme != 'https' or not origin_parts.hostname or origin_parts.username
+                or origin_parts.password or origin_parts.path or origin_parts.query or origin_parts.fragment
+                or private_origin == PUBLIC):
+            raise RuntimeError('PRIVATE_ORIGIN must be a distinct HTTPS origin')
+        private_hosts.append(origin_parts.hostname)
+    app.config.update(MAX_CONTENT_LENGTH=storage.LIMIT, PRIVATE_ORIGIN=private_origin,
+                      TRUSTED_HOSTS=private_hosts if private else [PUBLIC_PARTS.hostname])
 
     @app.before_request
     def boundary():
@@ -75,7 +84,7 @@ def create_app(private=False):
                 abort(403)
             # No cookies/CORS auth. Reject browser cross-origin requests explicitly.
             origin = request.headers.get('Origin')
-            if origin and origin != request.host_url.rstrip('/'):
+            if origin and origin != (app.config['PRIVATE_ORIGIN'] or request.host_url.rstrip('/')):
                 abort(403)
             if request.headers.get('Sec-Fetch-Site') == 'cross-site':
                 abort(403)

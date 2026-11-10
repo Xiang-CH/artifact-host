@@ -70,3 +70,14 @@ For upgrades, install dependencies in a **new release-specific virtual environme
 Run `python -m unittest discover -s tests -v`. Tests cover strict auth, owner/agent isolation, API/CLI/real stdio MCP upload and revoke, redirects, expiry, ZIP and symlink handling, physical/empty-file/concurrent quotas, slow uploads versus token revocation, reverse-proxy reads, cache headers, legacy Markdown backfill and coherent backup/restore with tamper detection. See `SECURITY_REVIEW.md` for the security review and browser evidence.
 
 Public sharing remains pending a dedicated hostname and tunnel routing. No Alibaba CDN resources are enabled. CDN is optional: verify origin Host/SNI, DNS loop prevention, direct-origin behavior and expiry/revocation with caching disabled before enabling it. Do not cache share responses unless per-request edge authorization or an explicitly accepted invalidation delay is implemented. No paid cloud resources are provisioned by this repository.
+
+## Tailnet test deployment
+
+Tailscale Serve can expose two separate HTTPS origins while both Gunicorn listeners stay on loopback. For example, use HTTPS port 8443 for management/API and 8444 for artifact reads. Configure `PRIVATE_ORIGIN=https://your-node.your-tailnet.ts.net:8443` and `PUBLIC_URL=https://your-node.your-tailnet.ts.net:8444` in the artifact units, then restart only those units. `PRIVATE_ORIGIN` adds its exact hostname to the private Host allowlist and accepts that exact browser Origin; arbitrary forwarded headers remain untrusted. CLI and MCP still require their bearer tokens at the HTTPS API origin. Artifact links work only for devices allowed to reach the node on the tailnet.
+
+```sh
+tailscale serve --bg --https=8443 http://127.0.0.1:8791
+tailscale serve --bg --https=8444 http://127.0.0.1:8792
+```
+
+Inspect `tailscale serve status --json` first and preserve existing routes. These are Serve routes, not public Funnel routes. Disable only these routes with `tailscale serve --https=8443 off` and `tailscale serve --https=8444 off`. Tailnet ACLs/grants still control network reachability; application tokens control upload/revoke and ownership.

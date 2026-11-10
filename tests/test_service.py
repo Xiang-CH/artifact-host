@@ -16,7 +16,7 @@ import zipfile
 
 os.environ['ARTIFACT_DATA'] = tempfile.mkdtemp(prefix='artifact-tests-')
 from artifact_host import storage
-from artifact_host.app import private_app, public_app, token
+from artifact_host.app import private_app, public_app, token, create_app
 from artifact_host.rendering import MAX_MARKDOWN
 public_app.config['SERVER_NAME'] = '127.0.0.1'
 
@@ -218,6 +218,19 @@ class Service(unittest.TestCase):
         forged=blob[:position]+fake+zip64+locator+false+b'x'*65535
         with patch.object(storage,'MAX_FILES',1),patch('artifact_host.storage.zipfile.ZipFile',side_effect=AssertionError('Must reject before allocation')):
             self.assertEqual(self.upload(data=forged,extra='&bundle=1').status_code,400)
+
+    def test_explicit_https_private_origin(self):
+        with patch.dict(os.environ,{'PRIVATE_ORIGIN':'https://private.example:8443'}):
+            app=create_app(True)
+        client=app.test_client()
+        headers=dict(self.headers(),Host='private.example:8443',Origin='https://private.example:8443')
+        self.assertEqual(client.post('/api/artifacts?name=x',data=b'x',headers=headers).status_code,201)
+        self.assertEqual(client.post('/api/artifacts?name=x',data=b'x',headers={'Host':'private.example:8443','Origin':'https://private.example:8443'}).status_code,401)
+        headers['Origin']='https://evil.example'
+        headers['X-Forwarded-Proto']='https'
+        self.assertEqual(client.post('/api/artifacts?name=x',data=b'x',headers=headers).status_code,403)
+        with patch.dict(os.environ,{'PRIVATE_ORIGIN':'http://private.example'}),self.assertRaises(RuntimeError):
+            create_app(True)
 
     def test_private_and_public_boundaries(self):
         self.assertEqual(self.private.get('/health',environ_overrides={'REMOTE_ADDR':'100.64.0.1'}).status_code,403)
