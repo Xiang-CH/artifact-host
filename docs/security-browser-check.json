@@ -14,7 +14,7 @@
     "xss": false
   },
   "token_created_once": true,
-  "dashboard_no_persistence": true,
+  "dashboard_no_raw_token_storage": true,
   "token_revoked": true,
   "artifact_revoked": true,
   "forgotten": true
