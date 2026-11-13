@@ -114,3 +114,6 @@ Regression tests cover real remote initialize/tool calls, SSE responses, anonymo
 
 
 The dashboard opens in the active category. Expired and revoked artifacts are grouped under Archive; filtering happens in SQLite before pagination. Archive membership is derived from expiry/revocation, without moving files or changing links. Dark, light and system appearance choices persist across visits. Browser sessions expire after 30 days and require login again after logout, expiry or owner-token invalidation.
+
+
+Markdown previews use a document layout with constrained reading width, responsive typography, code/table styles and a system/light/dark selector. The trusted viewer script is inserted only after Markdown HTML sanitization; uploaded scripts and event handlers stay forbidden. Because the public sandbox blocks browser storage, document theme changes are also saved in the URL fragment, such as `#theme=dark`, so reload/bookmark preserves them without weakening isolation. Use offline `python -m artifact_host.maintenance backfill --refresh` with both artifact services stopped to rebuild existing caches after a viewer update. Source Markdown and share URLs do not change.

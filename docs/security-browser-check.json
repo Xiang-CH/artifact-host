@@ -8,6 +8,7 @@
   },
   "relative_image": true,
   "interactive": true,
+  "markdown_theme_persisted": true,
   "markdown": {
     "heading": "Browser Markdown",
     "image": 1,

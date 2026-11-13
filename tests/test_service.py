@@ -91,7 +91,7 @@ class Service(unittest.TestCase):
         response=self.get(value)
         self.assertEqual(response.status_code,200)
         for expected in (b'<h1>',b'<table>',b'codehilite'):self.assertIn(expected,response.data)
-        for forbidden in (b'<script>',b'onerror=',b'href="javascript:'):self.assertNotIn(forbidden,response.data)
+        for forbidden in (b'<script>alert(1)',b'onerror=',b'href="javascript:'):self.assertNotIn(forbidden,response.data)
         self.assertIn('sandbox allow-scripts',response.headers['Content-Security-Policy'])
         self.assertEqual(self.get(value,'.artifact-render/README.md').status_code,404)
         value=self.upload(data=b'x'*(MAX_MARKDOWN+1)).json

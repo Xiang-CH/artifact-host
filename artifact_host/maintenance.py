@@ -82,7 +82,7 @@ def restore(source, destination):
         shutil.rmtree(destination)
         raise
 
-def backfill():
+def backfill(refresh=False):
     """Prepare legacy Markdown caches offline before restarting an upgraded service."""
     from artifact_host.rendering import CACHE_DIR, render_bundle
     with (storage.ROOT / '.upload.lock').open('a') as lock:
@@ -97,11 +97,20 @@ def backfill():
                 if directory.is_symlink():
                     raise ValueError('Artifact directory is a symlink')
                 list(tree_files(directory))  # Reject nested symlinks too.
-                if (directory / CACHE_DIR).exists():
+                if (directory / CACHE_DIR).exists() and not refresh:
                     continue
                 before = storage.tree_usage(directory)
                 capacity = storage.BUDGET - storage.disk_usage() + before - 16384
-                render_bundle(directory, capacity)
+                pending = directory / '.artifact-render-next'
+                if pending.exists(): shutil.rmtree(pending)
+                try:
+                    render_bundle(directory, capacity, cache_dir='.artifact-render-next')
+                except BaseException:
+                    shutil.rmtree(pending, ignore_errors=True)
+                    raise
+                if pending.exists():
+                    if (directory / CACHE_DIR).exists(): shutil.rmtree(directory / CACHE_DIR)
+                    pending.rename(directory / CACHE_DIR)
                 size = storage.tree_usage(directory)
                 if size > capacity:
                     raise ValueError('Legacy rendering exceeds storage quota')
@@ -110,13 +119,13 @@ def backfill():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    sub.add_parser('backfill')
+    sub.add_parser('backfill').add_argument('--refresh', action='store_true')
     p = sub.add_parser('backup'); p.add_argument('destination')
     p = sub.add_parser('restore'); p.add_argument('source'); p.add_argument('destination')
     args = parser.parse_args()
     try:
         if args.command == 'backup': backup(args.destination)
-        elif args.command == 'backfill': backfill()
+        elif args.command == 'backfill': backfill(refresh=args.refresh)
         else: restore(args.source, args.destination)
     except Exception:
         parser.exit(1, 'Backup/restore failed. Check paths, permissions, integrity, and upload activity.\n')
