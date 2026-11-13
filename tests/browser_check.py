@@ -48,18 +48,25 @@ def main():
         browser('click','#new-token')
         browser('wait','--fn','document.querySelectorAll("#tokens p").length === 2')
         result['token_created_once']=evaluate('document.querySelector("#status").textContent.startsWith("请立即保存")')
-        result['dashboard_no_persistence']=evaluate('localStorage.length===0 && document.cookie===""')
+        browser('open',EndToEnd.api)
+        browser('wait','--fn','document.querySelectorAll("#artifacts p").length === 2')
+        result['dashboard_no_raw_token_storage']=evaluate('document.querySelector("#key").value==="" && document.cookie===""')
+        browser('select','#theme','dark')
+        browser('open',EndToEnd.api)
+        browser('wait','--fn','document.documentElement.dataset.theme==="dark" && document.querySelectorAll("#artifacts p").length===2')
+        browser('click','#token-details summary')
         browser('click','#tokens button')
         browser('dialog','accept')
         browser('wait','--fn','document.querySelectorAll("#tokens p").length === 1')
         result['token_revoked']=True
         browser('click','#artifacts button')
         browser('dialog','accept')
+        browser('click','#archive-nav')
         browser('wait','--fn','document.querySelector("#artifacts").textContent.includes("已撤销")')
         result['artifact_revoked']=True
         browser('click','#forget')
         result['forgotten']=evaluate('document.querySelector("#key").value==="" && document.querySelectorAll("#artifacts p").length===0')
-        assert all(result['sandbox'].values()) and all(result[k] for k in ('relative_image','interactive','token_created_once','dashboard_no_persistence','token_revoked','artifact_revoked','forgotten'))
+        assert all(result['sandbox'].values()) and all(result[k] for k in ('relative_image','interactive','token_created_once','dashboard_no_raw_token_storage','token_revoked','artifact_revoked','forgotten'))
         assert result['markdown']=={'heading':'Browser Markdown','image':1,'xss':False}
         destination=Path(__file__).resolve().parents[1]/'docs/security-browser-check.json'
         destination.parent.mkdir(exist_ok=True)

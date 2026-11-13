@@ -43,12 +43,21 @@ def share_url(row):
 
 def credential():
     header = request.headers.get('Authorization', '')
+    if not header and request.cookies.get('artifact_session'):
+        if request.headers.get('X-Artifact-UI') != '1':
+            abort(401)
+        if request.method not in ('GET', 'HEAD') and request.headers.get('Origin') != (current_app.config['PRIVATE_ORIGIN'] or request.host_url.rstrip('/')):
+            abort(403)
+        return 'session:' + request.cookies['artifact_session']
     if not re.fullmatch(r'Bearer [A-Za-z0-9_-]{43}', header):
         abort(401)
     return header[7:]
 
 def authenticate(connection, secret, owner=False):
-    row = connection.execute('SELECT * FROM tokens WHERE hash=?', (storage.digest(secret),)).fetchone()
+    if secret.startswith('session:'):
+        row = connection.execute('SELECT tokens.* FROM browser_sessions JOIN tokens ON tokens.id=browser_sessions.token_id WHERE browser_sessions.hash=? AND browser_sessions.expires>? AND tokens.owner=1', (storage.digest(secret[8:]), time.time())).fetchone()
+    else:
+        row = connection.execute('SELECT * FROM tokens WHERE hash=?', (storage.digest(secret),)).fetchone()
     if row is None:
         abort(401)
     if owner and not row['owner']:
@@ -87,7 +96,7 @@ def create_app(private=False):
                 abort(403)
             if not address.is_loopback:
                 abort(403)
-            # No cookies/CORS auth. Reject browser cross-origin requests explicitly.
+            # Reject cross-origin requests for bearer and browser-session operations.
             origin = request.headers.get('Origin')
             if origin and origin != (app.config['PRIVATE_ORIGIN'] or request.host_url.rstrip('/')):
                 abort(403)
@@ -137,6 +146,32 @@ def create_app(private=False):
         def dashboard_script():
             return send_file(Path(__file__).parent / 'dashboard.js', mimetype='text/javascript', conditional=False)
 
+        @app.post('/api/session')
+        def login():
+            if request.headers.get('X-Artifact-UI') != '1' or not request.headers.get('Authorization'):
+                abort(401)
+            secret = secrets.token_urlsafe(32)
+            with storage.database() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                agent = authenticate(connection, credential(), owner=True)
+                connection.execute('DELETE FROM browser_sessions WHERE expires<=?', (time.time(),))
+                connection.execute('DELETE FROM browser_sessions WHERE token_id=? AND hash NOT IN (SELECT hash FROM browser_sessions WHERE token_id=? ORDER BY expires DESC LIMIT 31)', (agent['id'], agent['id']))
+                connection.execute('INSERT INTO browser_sessions VALUES(?,?,?)', (storage.digest(secret), agent['id'], time.time()+30*86400))
+            response = jsonify(ok=True)
+            response.set_cookie('artifact_session', secret, max_age=30*86400, httponly=True,
+                                secure=bool(private_origin), samesite='Strict', path='/api')
+            return response
+
+        @app.delete('/api/session')
+        def logout():
+            with storage.database() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                authenticate(connection, credential(), owner=True)
+                connection.execute('DELETE FROM browser_sessions WHERE hash=?', (storage.digest(request.cookies.get('artifact_session', '')),))
+            response = jsonify(ok=True)
+            response.delete_cookie('artifact_session', path='/api', secure=bool(private_origin), httponly=True, samesite='Strict')
+            return response
+
         @app.get('/api/identity')
         def identity():
             with storage.database() as connection:
@@ -153,9 +188,21 @@ def create_app(private=False):
                     abort(400)
                 query = 'SELECT artifacts.*, aliases.slug AS short_slug FROM artifacts LEFT JOIN aliases ON aliases.artifact_id=artifacts.id'
                 params = ()
+                conditions = []
                 if not agent['owner']:
-                    query += ' WHERE artifacts.owner=?'
-                    params = (agent['id'],)
+                    conditions.append('artifacts.owner=?')
+                    params += (agent['id'],)
+                category = request.args.get('category', 'all')
+                if category == 'active':
+                    conditions.append('artifacts.revoked=0 AND (artifacts.expires IS NULL OR artifacts.expires>?)')
+                    params += (time.time(),)
+                elif category == 'archive':
+                    conditions.append('(artifacts.revoked=1 OR (artifacts.expires IS NOT NULL AND artifacts.expires<=?))')
+                    params += (time.time(),)
+                elif category != 'all':
+                    abort(400)
+                if conditions:
+                    query += ' WHERE ' + ' AND '.join(conditions)
                 rows = connection.execute(query + ' ORDER BY artifacts.rowid LIMIT 100 OFFSET ?', params + (offset,)).fetchall()
                 return jsonify([dict(row, url=share_url(row)) for row in rows])
 

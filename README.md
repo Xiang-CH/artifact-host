@@ -33,7 +33,7 @@ Folder bundles require root `index.html` or `README.md`. The CLI rejects symlink
 - `DELETE /api/artifacts/<id>` commits revocation, then deletes files. It is retryable if disk cleanup fails. Failed cleanup does not make a link available again or free its quota.
 - Owner-only `GET/POST /api/tokens` lists token IDs or creates an agent token shown once. `DELETE /api/tokens/<id>` revokes an agent token. Agent tokens cannot create/revoke tokens or modify another agent's artifacts. Revoking a token does not revoke its existing share links; revoke those separately.
 
-The private management page supports listing, viewing, deleting/revoking artifacts, creating tokens and revoking agent tokens. It holds the owner token only in the page's password field, never cookies or local storage. Forget the token or close the page when finished.
+The private management page supports listing, viewing, deleting/revoking artifacts, creating tokens and revoking agent tokens. It exchanges the owner token for a random 30-day browser session, clears the raw token input, and restores login on reload. The cookie is HttpOnly, SameSite=Strict, Secure on the configured HTTPS origin, host-only and scoped to /api. Only a hash is stored server-side, linked to the active owner token. Session requests require a custom UI header; mutations also require the exact admin Origin. Logout revokes the session. No raw owner token is stored in browser storage. The read service never authenticates cookies; its reserved /api paths are not artifact routes. Theme preference alone is stored in localStorage.
 
 New share URLs are `/s/<256-bit-random-capability>/<readable-title>-<unique-suffix>/`. Titles are normalized and SQLite enforces slug uniqueness. Avoid sensitive titles. Existing capability links remain valid; artifacts without a slug retain their original path.
 
@@ -111,3 +111,6 @@ The default MCP JSON body limit is **8 MiB**, including base64 encoding. Use the
 For Codex, use a Streamable HTTP entry with `url` and a bearer credential source. A local `http_headers_helper` can read a mode-0600 credential file and print its Authorization header to Codex without embedding the secret in `config.toml`. Back up the stdio entry before changing it. The remote endpoint still requires Tailscale connectivity; cloud-hosted MCP clients outside the tailnet cannot reach it until an explicitly configured public ingress exists.
 
 Regression tests cover real remote initialize/tool calls, SSE responses, anonymous/invalid/revoked tokens, revocation on an existing client, multi-agent ownership, concurrent identity isolation, Host/Origin checks and fixed/chunked body limits.
+
+
+The dashboard opens in the active category. Expired and revoked artifacts are grouped under Archive; filtering happens in SQLite before pagination. Archive membership is derived from expiry/revocation, without moving files or changing links. Dark, light and system appearance choices persist across visits. Browser sessions expire after 30 days and require login again after logout, expiry or owner-token invalidation.

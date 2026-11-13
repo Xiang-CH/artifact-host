@@ -2,9 +2,18 @@
 const element = id => document.getElementById(id);
 let offset = 0;
 let files = [];
+let category = 'active';
+const theme = element('theme');
+try { theme.value = localStorage.getItem('artifact-theme') || 'system'; } catch (_) {}
+function applyTheme() {
+  document.documentElement.dataset.theme = theme.value === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : theme.value;
+}
+applyTheme();
+theme.addEventListener('change', () => { applyTheme(); try { localStorage.setItem('artifact-theme', theme.value); } catch (_) {} });
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 async function api(method, path) {
-  const response = await fetch(path, {method, credentials: 'omit', cache: 'no-store', redirect: 'error',
-    headers: {Authorization: 'Bearer ' + element('key').value}});
+  const response = await fetch(path, {method, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
+    headers: {'X-Artifact-UI':'1', ...(element('key').value ? {Authorization: 'Bearer ' + element('key').value} : {})}});
   if (!response.ok) throw new Error(response.status === 401 ? '凭证无效或已撤销，请检查 Owner token。' : '操作失败：HTTP ' + response.status);
   return response.status === 204 ? null : response.json();
 }
@@ -58,10 +67,11 @@ function render() {
   }
 }
 async function load() {
-  const artifacts = await api('GET', '/api/artifacts?offset=' + offset);
+  const artifacts = await api('GET', '/api/artifacts?category=' + category + '&offset=' + offset);
   const tokens = await api('GET', '/api/tokens');
   files = artifacts;render();element('tokens').replaceChildren();
-  element('connection').textContent = '已连接 · Owner';
+  element('connection').textContent = '已登录 · Owner';
+  element('login-panel').classList.add('connected');
   element('previous').disabled = offset === 0;
   element('next').disabled = artifacts.length < 100;
   element('page-label').textContent = '第 ' + (Math.floor(offset/100)+1) + ' 页 · 当前页 ' + artifacts.length + ' 项';
@@ -75,19 +85,26 @@ async function load() {
     }));element('tokens').append(row);
   }
 }
-element('load').addEventListener('click', () => run(load));
+element('load').addEventListener('click', () => run(async () => { await api('POST','/api/session'); element('key').value=''; await load(); }));
 element('refresh').addEventListener('click', () => run(load));
 element('search').addEventListener('input',render);
-element('filter').addEventListener('change',render);
+element('filter').addEventListener('change', () => run(async () => { category = element('filter').value === 'active' ? 'active' : 'archive'; offset=0; await load(); }));
+function chooseCategory(value) { category=value;offset=0;element('filter').value=value==='active'?'active':'all';element('files-nav').classList.toggle('active',value==='active');element('archive-nav').classList.toggle('active',value==='archive');return load(); }
+element('files-nav').addEventListener('click', () => run(() => chooseCategory('active')));
+element('archive-nav').addEventListener('click', () => run(() => chooseCategory('archive')));
 element('new-token').addEventListener('click', () => run(async () => {
   const token = await api('POST', '/api/tokens'); await load();
   element('status').textContent = '请立即保存，token 仅显示一次：' + token.token;
 }));
-element('forget').addEventListener('click', () => {
+element('forget').addEventListener('click', () => run(async () => {
+  await api('DELETE','/api/session');
+  element('login-panel').classList.remove('connected');
   element('key').value = ''; files = [];element('artifacts').replaceChildren();
   element('tokens').replaceChildren();element('status').textContent = '';offset = 0;
   element('connection').textContent = '尚未连接';element('count').textContent = '—';
   element('empty').textContent = '连接后，在这里查看你的文件和分享链接。';element('empty').hidden = false;
-});
+}));
 element('previous').addEventListener('click', () => run(async () => { offset = Math.max(0, offset - 100); await load(); }));
 element('next').addEventListener('click', () => run(async () => { offset += 100; await load(); }));
+
+(async () => { try { await api('GET','/api/identity'); await load(); } catch (_) { /* First visit needs login. */ } })();
