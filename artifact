@@ -11,11 +11,18 @@ parser.add_argument('--api', help='HTTPS API origin, or loopback HTTP through SS
 parser.add_argument('--slug', default='')
 parser.add_argument('--expires', type=float, help='Expiry Unix timestamp')
 parser.add_argument('--revoke', metavar='ARTIFACT_ID', help='Revoke and delete an owned artifact')
+parser.add_argument('--alias', metavar='ARTIFACT_ID', help='Assign an owned artifact a short slug using --slug')
 args = parser.parse_args()
-if bool(args.path) == bool(args.revoke):
-    parser.error('Supply a path or --revoke ARTIFACT_ID')
+if sum(bool(x) for x in (args.path, args.revoke, args.alias)) != 1:
+    parser.error('Supply a path, --revoke ARTIFACT_ID, or --alias ARTIFACT_ID')
+if args.alias and not args.slug:
+    parser.error('--alias requires --slug')
 try:
-    if args.revoke:
+    if args.alias:
+        from urllib.parse import urlencode
+        result = api('POST', '/api/artifacts/'+quote(args.alias, safe='')+'/alias?'+urlencode({'slug': args.slug}), endpoint=args.api)
+        print(result['url'])
+    elif args.revoke:
         api('DELETE', '/api/artifacts/' + quote(args.revoke, safe=''), endpoint=args.api)
         print('Artifact revoked')
     else:

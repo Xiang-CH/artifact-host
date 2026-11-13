@@ -29,7 +29,7 @@ class EndToEnd(unittest.TestCase):
         cls.private_port=free_port();cls.public_port=free_port()
         cls.api=f'http://127.0.0.1:{cls.private_port}'
         cls.public=f'http://127.0.0.1:{cls.public_port}'
-        cls.env=dict(os.environ,ARTIFACT_DATA=str(cls.directory/'data'),PUBLIC_URL=cls.public)
+        cls.env=dict(os.environ,ARTIFACT_DATA=str(cls.directory/'data'),PUBLIC_URL=cls.public,READABLE_URLS='1')
         result=subprocess.run([sys.executable,'-m','artifact_host.app','init'],cwd=REPO,env=cls.env,capture_output=True,check=True)
         cls.owner=json.loads(result.stdout)['token'];cls.processes=[]
         cls.log=(cls.directory/'server.log').open('w+')
@@ -69,7 +69,10 @@ class EndToEnd(unittest.TestCase):
         path=urlsplit(result.stdout.decode().strip()).path
         code,body,_=self.request('GET',path,base=self.public)
         self.assertEqual(code,200);self.assertIn(b'<h1>CLI report</h1>',body)
-        identifier=path.split('/')[2]
+        items=json.loads(self.request('GET','/api/artifacts',secret=agent['token'])[1])
+        identifier=next(item['id'] for item in items if urlsplit(item['url']).path==path)
+        short_alias=subprocess.run([sys.executable,'artifact','--alias',identifier,'--slug','cli-report'],cwd=REPO,env=env,capture_output=True)
+        self.assertEqual(short_alias.returncode,0)
         no_auth=dict(env,ARTIFACT_TOKEN='')
         for args in ([str(file)],['--revoke',identifier]):
             result=subprocess.run([sys.executable,'artifact',*args],cwd=REPO,env=no_auth,capture_output=True)
@@ -95,7 +98,7 @@ class EndToEnd(unittest.TestCase):
                 async with stdio_client(params,errlog=log) as (read,write):
                     async with ClientSession(read,write) as session:
                         await session.initialize()
-                        self.assertEqual({t.name for t in (await session.list_tools()).tools},{'upload_artifact','list_artifacts','revoke_artifact'})
+                        self.assertEqual({t.name for t in (await session.list_tools()).tools},{'upload_artifact','list_artifacts','revoke_artifact','set_artifact_slug'})
                         result=await session.call_tool('upload_artifact',{'name':'index.html','content':'<h1>MCP report</h1>','slug':'MCP report'})
                         if not secret or secret=='invalid':
                             self.assertTrue(result.isError)
@@ -103,6 +106,8 @@ class EndToEnd(unittest.TestCase):
                             return
                         self.assertFalse(result.isError)
                         value=json.loads(result.content[0].text)
+                        alias=await session.call_tool('set_artifact_slug',{'artifact_id':value['id'],'slug':value['short_slug']})
+                        self.assertFalse(alias.isError)
                         path=urlsplit(value['url']).path
                         self.assertEqual(self.request('GET',path,base=self.public)[0],200)
                         result=await session.call_tool('revoke_artifact',{'artifact_id':value['id']})

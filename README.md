@@ -45,7 +45,7 @@ The bridge uses the [official MCP Python SDK](https://github.com/modelcontextpro
 {"mcpServers":{"artifacts":{"command":"/absolute/path/to/.venv/bin/python","args":["-m","artifact_host.mcp_server"],"cwd":"/absolute/path/to/artifact-host","env":{"ARTIFACT_API":"http://127.0.0.1:8791"}}}}
 ```
 
-Tools are `upload_artifact`, `list_artifacts`, and `revoke_artifact`. Upload accepts UTF-8 text or base64 binary; ZIPs use `bundle=true`. No filesystem-reading tool is exposed. Use the CLI for large files to avoid passing base64 through model context. Missing, invalid or revoked tokens fail upload and revoke through the same authenticated API. Listing is paginated through the HTTP API; the MCP listing currently returns its first 100 entries.
+Tools are `upload_artifact`, `list_artifacts`, `revoke_artifact`, and `set_artifact_slug`. Upload accepts UTF-8 text or base64 binary; ZIPs use `bundle=true`. No filesystem-reading tool is exposed. Use the CLI for large files to avoid passing base64 through model context. Missing, invalid or revoked tokens fail upload and revoke through the same authenticated API. Listing is paginated through the HTTP API; the MCP listing currently returns its first 100 entries.
 
 ## Isolation and limits
 
@@ -81,3 +81,11 @@ tailscale serve --bg --https=8444 http://127.0.0.1:8792
 ```
 
 Inspect `tailscale serve status --json` first and preserve existing routes. These are Serve routes, not public Funnel routes. Disable only these routes with `tailscale serve --https=8443 off` and `tailscale serve --https=8444 off`. Tailnet ACLs/grants still control network reachability; application tokens control upload/revoke and ownership.
+
+## Simple short slugs
+
+Set `READABLE_URLS=1` in **both** artifact services to return simple URLs such as `https://host/architecture/`. It is enabled for the Tailnet test deployment. This opts into guessable names rather than secret-capability privacy. Anyone who can reach the read service can try those names; retain Tailnet access controls, or use this mode only for content you intend to expose. The feature is off by default. Turning it off disables short routes and makes listing return the original capability URLs.
+
+When enabled, upload `slug=architecture` requests that exact normalized name. No random suffix is added. If the name is already reserved by another artifact, the upload fails with HTTP 409 and does not overwrite it. Without an explicit slug, the service derives a name from the filename and uses `-2`, `-3`, etc. only on collisions. The response's `url` is the short canonical URL, `short_slug` is the simple name, and `slug` retains the older capability-path label for compatibility. Keep the trailing slash so relative bundle assets resolve correctly.
+
+Existing owned artifacts can receive a short URL using authenticated `POST /api/artifacts/<id>/alias?slug=architecture`, CLI `./artifact --alias ARTIFACT_ID --slug architecture`, or MCP `set_artifact_slug`. The operation checks agent ownership or owner privileges inside its transaction. Each artifact gets at most one immutable short name. Names remain reserved after revoke, so an old link cannot later be reassigned to someone else's content. Expiry, revoke, no-store and sandbox policy apply equally to both URL forms, and all original links remain valid. Backup/restore includes the alias table in the same database snapshot.

@@ -29,6 +29,7 @@ class QuotaExceeded(InvalidUpload):
 def database():
     connection = sqlite3.connect(ROOT / 'state.db', timeout=15)
     connection.row_factory = sqlite3.Row
+    connection.execute('PRAGMA foreign_keys=ON')
     try:
         yield connection
         connection.commit()
@@ -51,6 +52,7 @@ def initialize():
         if 'slug' not in {r[1] for r in connection.execute('PRAGMA table_info(artifacts)')}:
             connection.execute('ALTER TABLE artifacts ADD COLUMN slug TEXT')
         connection.execute('CREATE UNIQUE INDEX IF NOT EXISTS artifact_slug ON artifacts(slug)')
+        connection.execute('CREATE TABLE IF NOT EXISTS aliases(slug TEXT PRIMARY KEY, artifact_id TEXT NOT NULL UNIQUE REFERENCES artifacts(id))')
     (ROOT / 'state.db').chmod(0o600)
 
 def digest(value):
@@ -65,6 +67,13 @@ def issue_token(connection, owner=False):
 def make_slug(title):
     title = unicodedata.normalize('NFKD', title).encode('ascii', 'ignore').decode().lower()
     return (re.sub(r'[^a-z0-9]+', '-', title).strip('-')[:64] or 'artifact') + '-' + secrets.token_hex(6)
+
+def alias_slug(title):
+    title = unicodedata.normalize('NFKD', title).encode('ascii', 'ignore').decode().lower()
+    slug = re.sub(r'[^a-z0-9]+', '-', title).strip('-')[:64].rstrip('-')
+    if not slug or slug in {'s', 'api', 'health', 'static', 'favicon', 'robots'}:
+        raise InvalidUpload('Invalid or reserved slug')
+    return slug
 
 def safe_path(name):
     if (not name or len(name.encode('utf-8')) > 1024 or name.startswith('/') or '\\' in name

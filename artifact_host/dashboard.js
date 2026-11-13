@@ -21,7 +21,7 @@ async function load() {
   element('artifacts').replaceChildren();
   for (const artifact of artifacts) {
     const row = document.createElement('p');
-    row.textContent = (artifact.slug || artifact.entry) + (artifact.revoked ? ' (revoked) ' : ' ');
+    row.textContent = (artifact.short_slug || artifact.slug || artifact.entry) + (artifact.revoked ? ' (revoked) ' : ' ');
     const link = document.createElement('a'); link.textContent = 'View'; link.href = artifact.url;
     link.target = '_blank'; link.rel = 'noopener noreferrer'; row.append(link);
     row.append(action('Revoke and delete', async () => {

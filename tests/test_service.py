@@ -25,7 +25,7 @@ class Service(unittest.TestCase):
         for p in storage.ROOT.iterdir():
             if p.is_dir(): shutil.rmtree(p)
         with storage.database() as c:
-            c.execute('DELETE FROM artifacts'); c.execute('DELETE FROM tokens')
+            c.execute('DELETE FROM aliases'); c.execute('DELETE FROM artifacts'); c.execute('DELETE FROM tokens')
         self.owner_id, self.owner = token(True)
         self.agent_id, self.agent = token()
         self.other_id, self.other = token()

@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from flask import Flask, Response, abort, jsonify, request, send_file
+from flask import Flask, Response, abort, current_app, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
 
 from artifact_host import storage
@@ -37,6 +37,8 @@ def token(owner=False):
         return value['id'], value['token']
 
 def share_url(row):
+    if current_app.config['READABLE_URLS'] and 'short_slug' in row.keys() and row['short_slug']:
+        return PUBLIC + '/' + row['short_slug'] + '/'
     return PUBLIC + '/s/' + row['id'] + '/' + (row['slug'] + '/' if row['slug'] else '')
 
 def credential():
@@ -71,10 +73,13 @@ def create_app(private=False):
             raise RuntimeError('PRIVATE_ORIGIN must be a distinct HTTPS origin')
         private_hosts.append(origin_parts.hostname)
     app.config.update(MAX_CONTENT_LENGTH=storage.LIMIT, PRIVATE_ORIGIN=private_origin,
+                      READABLE_URLS=os.environ.get('READABLE_URLS') == '1',
                       TRUSTED_HOSTS=private_hosts if private else [PUBLIC_PARTS.hostname])
 
     @app.before_request
     def boundary():
+        if not private and request.method not in ('GET', 'HEAD'):
+            abort(404)
         if private:
             try:
                 address = ipaddress.ip_address(request.remote_addr or '')
@@ -136,12 +141,12 @@ def create_app(private=False):
                     offset = max(0, int(request.args.get('offset', 0)))
                 except ValueError:
                     abort(400)
-                query = 'SELECT * FROM artifacts'
+                query = 'SELECT artifacts.*, aliases.slug AS short_slug FROM artifacts LEFT JOIN aliases ON aliases.artifact_id=artifacts.id'
                 params = ()
                 if not agent['owner']:
-                    query += ' WHERE owner=?'
+                    query += ' WHERE artifacts.owner=?'
                     params = (agent['id'],)
-                rows = connection.execute(query + ' ORDER BY rowid LIMIT 100 OFFSET ?', params + (offset,)).fetchall()
+                rows = connection.execute(query + ' ORDER BY artifacts.rowid LIMIT 100 OFFSET ?', params + (offset,)).fetchall()
                 return jsonify([dict(row, url=share_url(row)) for row in rows])
 
         @app.route('/api/tokens', methods=['GET', 'POST'])
@@ -164,6 +169,46 @@ def create_app(private=False):
                 if not result.rowcount:
                     abort(404)
             return '', 204
+
+        def bind_alias(connection, identifier, title, exact=True):
+            try:
+                base = storage.alias_slug(title)
+            except storage.InvalidUpload:
+                if exact:
+                    raise
+                base = 'artifact'
+            current = connection.execute('SELECT slug FROM aliases WHERE artifact_id=?', (identifier,)).fetchone()
+            if current:
+                if current['slug'] != base:
+                    abort(409)
+                return base
+            candidate = base
+            counter = 2
+            while connection.execute('SELECT 1 FROM aliases WHERE slug=?', (candidate,)).fetchone():
+                if exact:
+                    abort(409)
+                suffix = '-' + str(counter)
+                candidate = base[:64-len(suffix)] + suffix
+                counter += 1
+            connection.execute('INSERT INTO aliases(slug,artifact_id) VALUES(?,?)', (candidate, identifier))
+            return candidate
+
+        @app.post('/api/artifacts/<identifier>/alias')
+        def set_alias(identifier):
+            if not app.config['READABLE_URLS']:
+                abort(404)
+            with storage.database() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                agent = authenticate(connection, credential())
+                row = connection.execute('SELECT * FROM artifacts WHERE id=?', (identifier,)).fetchone()
+                if row is None or row['revoked'] or (row['expires'] is not None and row['expires'] <= time.time()):
+                    abort(404)
+                if not agent['owner'] and row['owner'] != agent['id']:
+                    abort(403)
+                slug = bind_alias(connection, identifier, request.args.get('slug', ''))
+                if storage.disk_usage() > storage.BUDGET:
+                    raise storage.QuotaExceeded()
+            return {'id': identifier, 'short_slug': slug, 'url': PUBLIC + '/' + slug + '/'}
 
         @app.post('/api/artifacts')
         def upload():
@@ -218,15 +263,20 @@ def create_app(private=False):
                     if size > capacity:
                         raise storage.QuotaExceeded()
                     content.rename(ROOT / identifier)
+                    short_slug = None
                     try:
                         connection.execute('INSERT INTO artifacts(id,owner,entry,size,expires,slug) VALUES(?,?,?,?,?,?)',
                             (identifier, agent['id'], entry, size, expiry, slug))
+                        if app.config['READABLE_URLS']:
+                            title = request.args.get('slug') or Path(request.args.get('name', 'artifact')).stem
+                            short_slug = bind_alias(connection, identifier, title, exact=bool(request.args.get('slug')))
                         if storage.disk_usage() - storage.tree_usage(staging_root) > storage.BUDGET:
                             raise storage.QuotaExceeded('Metadata exceeds storage budget')
                     except BaseException:
                         shutil.rmtree(ROOT / identifier)
                         raise
-                return {'id': identifier, 'slug': slug, 'url': PUBLIC + '/s/' + identifier + '/' + slug + '/'}, 201
+                url = PUBLIC + '/' + short_slug + '/' if short_slug else PUBLIC + '/s/' + identifier + '/' + slug + '/'
+                return {'id': identifier, 'slug': slug, 'short_slug': short_slug, 'url': url}, 201
             finally:
                 # Do not remove another uploader's staging after failed flock.
                 try:
@@ -266,15 +316,28 @@ def create_app(private=False):
                 abort(404)
             with storage.database() as connection:
                 row = connection.execute('SELECT * FROM artifacts WHERE id=?', (identifier,)).fetchone()
-            if row is None or row['revoked'] or (row['expires'] is not None and row['expires'] <= time.time()):
-                abort(404)
-            if row['slug'] and name:
+            if row is not None and row['slug'] and name:
                 if name == row['slug'] + '/':
                     name = None
                 elif name.startswith(row['slug'] + '/'):
                     name = name[len(row['slug']) + 1:]
                 else:
                     abort(404)
+            return serve_file(row, name)
+
+        @app.get('/<short_slug>/', defaults={'name': None})
+        @app.get('/<short_slug>/<path:name>')
+        def serve_alias(short_slug, name):
+            if not app.config['READABLE_URLS']:
+                abort(404)
+            with storage.database() as connection:
+                row = connection.execute('SELECT artifacts.* FROM artifacts JOIN aliases ON aliases.artifact_id=artifacts.id WHERE aliases.slug=?', (short_slug,)).fetchone()
+            return serve_file(row, name)
+
+        def serve_file(row, name):
+            if row is None or row['revoked'] or (row['expires'] is not None and row['expires'] <= time.time()):
+                abort(404)
+            identifier = row['id']
             name = name or row['entry']
             try:
                 file_name(name)
