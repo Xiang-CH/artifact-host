@@ -1,0 +1,28 @@
+[Unit]
+Description=Artifact host Streamable HTTP MCP
+After=network.target artifact-private.service
+Wants=artifact-private.service
+
+[Service]
+WorkingDirectory=@RELEASE@
+Environment=ARTIFACT_API=http://127.0.0.1:8791
+Environment=MCP_ORIGIN=@MCP_ORIGIN@
+Environment=MCP_PORT=8793
+Environment=MCP_BODY_LIMIT=8388608
+Environment=MCP_ACTIVE_LIMIT=4
+ExecStart=@VENV@/bin/python -m artifact_host.remote_mcp
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+TasksMax=48
+MemoryMax=384M
+CPUQuota=100%
+
+[Install]
+WantedBy=default.target

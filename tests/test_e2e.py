@@ -98,7 +98,7 @@ class EndToEnd(unittest.TestCase):
                 async with stdio_client(params,errlog=log) as (read,write):
                     async with ClientSession(read,write) as session:
                         await session.initialize()
-                        self.assertEqual({t.name for t in (await session.list_tools()).tools},{'upload_artifact','list_artifacts','revoke_artifact','set_artifact_slug'})
+                        self.assertEqual({t.name for t in (await session.list_tools()).tools},{'upload_artifact','list_artifacts','revoke_artifact'})
                         result=await session.call_tool('upload_artifact',{'name':'index.html','content':'<h1>MCP report</h1>','slug':'MCP report'})
                         if not secret or secret=='invalid':
                             self.assertTrue(result.isError)
@@ -106,8 +106,6 @@ class EndToEnd(unittest.TestCase):
                             return
                         self.assertFalse(result.isError)
                         value=json.loads(result.content[0].text)
-                        alias=await session.call_tool('set_artifact_slug',{'artifact_id':value['id'],'slug':value['short_slug']})
-                        self.assertFalse(alias.isError)
                         path=urlsplit(value['url']).path
                         self.assertEqual(self.request('GET',path,base=self.public)[0],200)
                         result=await session.call_tool('revoke_artifact',{'artifact_id':value['id']})

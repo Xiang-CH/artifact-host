@@ -1,5 +1,6 @@
 """Authenticated HTTP client for CLI and MCP. Never follow redirects with secrets."""
 import io
+from contextvars import ContextVar
 import json
 import os
 import urllib.error
@@ -7,6 +8,8 @@ import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
+
+REQUEST_TOKEN = ContextVar('artifact_request_token', default=None)
 
 MAX_UPLOAD = 50 * 1024 * 1024
 
@@ -27,7 +30,9 @@ def endpoint_url(endpoint):
 
 def api(method, path, data=None, endpoint=None):
     endpoint = endpoint_url(endpoint or os.environ.get('ARTIFACT_API', 'http://127.0.0.1:8791'))
-    secret = os.environ.get('ARTIFACT_TOKEN', '')
+    secret = REQUEST_TOKEN.get()
+    if secret is None:
+        secret = '' if os.environ.get('ARTIFACT_REQUIRE_REQUEST_TOKEN') == '1' else os.environ.get('ARTIFACT_TOKEN', '')
     if not secret or any(c.isspace() for c in secret):
         raise ClientError('ARTIFACT_TOKEN is required')
     request = urllib.request.Request(endpoint + path, data=data, method=method,

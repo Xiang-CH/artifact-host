@@ -133,6 +133,12 @@ def create_app(private=False):
         def dashboard_script():
             return send_file(Path(__file__).parent / 'dashboard.js', mimetype='text/javascript', conditional=False)
 
+        @app.get('/api/identity')
+        def identity():
+            with storage.database() as connection:
+                agent = authenticate(connection, credential())
+                return {'id': agent['id'], 'owner': bool(agent['owner'])}
+
         @app.get('/api/artifacts')
         def listing():
             with storage.database() as connection:

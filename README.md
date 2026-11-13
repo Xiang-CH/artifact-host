@@ -45,7 +45,7 @@ The bridge uses the [official MCP Python SDK](https://github.com/modelcontextpro
 {"mcpServers":{"artifacts":{"command":"/absolute/path/to/.venv/bin/python","args":["-m","artifact_host.mcp_server"],"cwd":"/absolute/path/to/artifact-host","env":{"ARTIFACT_API":"http://127.0.0.1:8791"}}}}
 ```
 
-Tools are `upload_artifact`, `list_artifacts`, `revoke_artifact`, and `set_artifact_slug`. Upload accepts UTF-8 text or base64 binary; ZIPs use `bundle=true`. No filesystem-reading tool is exposed. Use the CLI for large files to avoid passing base64 through model context. Missing, invalid or revoked tokens fail upload and revoke through the same authenticated API. Listing is paginated through the HTTP API; the MCP listing currently returns its first 100 entries.
+Tools are `upload_artifact`, `list_artifacts`, and `revoke_artifact`. Upload accepts UTF-8 text or base64 binary; ZIPs use `bundle=true`. No filesystem-reading tool is exposed. Use the CLI for large files to avoid passing base64 through model context. Missing, invalid or revoked tokens fail upload and revoke through the same authenticated API. Listing is paginated through the HTTP API; the MCP listing currently returns its first 100 entries.
 
 ## Isolation and limits
 
@@ -88,4 +88,26 @@ Set `READABLE_URLS=1` in **both** artifact services to return simple URLs such a
 
 When enabled, upload `slug=architecture` requests that exact normalized name. No random suffix is added. If the name is already reserved by another artifact, the upload fails with HTTP 409 and does not overwrite it. Without an explicit slug, the service derives a name from the filename and uses `-2`, `-3`, etc. only on collisions. The response's `url` is the short canonical URL, `short_slug` is the simple name, and `slug` retains the older capability-path label for compatibility. Keep the trailing slash so relative bundle assets resolve correctly.
 
-Existing owned artifacts can receive a short URL using authenticated `POST /api/artifacts/<id>/alias?slug=architecture`, CLI `./artifact --alias ARTIFACT_ID --slug architecture`, or MCP `set_artifact_slug`. The operation checks agent ownership or owner privileges inside its transaction. Each artifact gets at most one immutable short name. Names remain reserved after revoke, so an old link cannot later be reassigned to someone else's content. Expiry, revoke, no-store and sandbox policy apply equally to both URL forms, and all original links remain valid. Backup/restore includes the alias table in the same database snapshot.
+Existing owned artifacts can receive a short URL using authenticated `POST /api/artifacts/<id>/alias?slug=architecture`, CLI `./artifact --alias ARTIFACT_ID --slug architecture`. MCP chooses the slug through the `upload_artifact.slug` parameter; it has no separate slug-setting tool. The HTTP/CLI alias operation checks agent ownership or owner privileges inside its transaction. Each artifact gets at most one immutable short name. Names remain reserved after revoke, so an old link cannot later be reassigned to someone else's content. Expiry, revoke, no-store and sandbox policy apply equally to both URL forms, and all original links remain valid. Backup/restore includes the alias table in the same database snapshot.
+
+## Remote Streamable HTTP MCP
+
+The optional `artifact_host.remote_mcp` service exposes the same three tools at `/mcp`. It is a separate server process, not a local stdio bridge. It forwards each caller's own bearer token to the private artifact API and never uses a shared owner token. `GET /api/identity` on the private API provides the authenticated, non-secret agent identity used for validation. Revoked tokens fail on the next MCP request, including existing clients' discovery requests; mutation authorization is also rechecked by the underlying API.
+
+```sh
+ARTIFACT_API=http://127.0.0.1:8791 \
+MCP_ORIGIN=https://your-node.your-tailnet.ts.net:8445 \
+python -m artifact_host.remote_mcp
+
+tailscale serve --bg --https=8445 http://127.0.0.1:8793
+```
+
+Use `deployment/artifact-mcp.service.template` for a user systemd unit. The process binds only `127.0.0.1:8793`; Tailscale Serve supplies tailnet HTTPS. Keep existing Serve routes and never enable Funnel for this test configuration. Every `/mcp` request needs `Authorization: Bearer <agent-token>`. This service accepts existing static agent tokens; it does not implement an OAuth authorization server or dynamic client registration. Any Streamable HTTP client that can send the header can connect.
+
+The transport is stateless Streamable HTTP. Each JSON-RPC POST can return an SSE response with `Content-Type: text/event-stream`; there are no long-lived session IDs or resumable streams. Authenticated GET returns 405 because standalone server-initiated event streams are not offered. Host/Origin are validated against the configured exact MCP origin; query-string credentials, non-loopback direct peers and redirects are rejected. Four active requests and 120-second request deadlines bound concurrency. Sync tools run in worker threads with isolated request credentials, so concurrent clients cannot inherit one another's identity.
+
+The default MCP JSON body limit is **8 MiB**, including base64 encoding. Use the CLI/HTTP API for larger files up to their normal 50 MiB limit. `MCP_BODY_LIMIT` can be set from 1 KiB to 72 MiB, and `MCP_ACTIVE_LIMIT` from 1 to 8; increase the memory cgroup limit appropriately before raising these. The default systemd MCP service is capped at 384 MiB and one CPU. The gateway has no data-directory write permission. Health is `/health`; server logs omit request paths, bodies, headers and exception messages.
+
+For Codex, use a Streamable HTTP entry with `url` and a bearer credential source. A local `http_headers_helper` can read a mode-0600 credential file and print its Authorization header to Codex without embedding the secret in `config.toml`. Back up the stdio entry before changing it. The remote endpoint still requires Tailscale connectivity; cloud-hosted MCP clients outside the tailnet cannot reach it until an explicitly configured public ingress exists.
+
+Regression tests cover real remote initialize/tool calls, SSE responses, anonymous/invalid/revoked tokens, revocation on an existing client, multi-agent ownership, concurrent identity isolation, Host/Origin checks and fixed/chunked body limits.
