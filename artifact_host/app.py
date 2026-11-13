@@ -129,6 +129,10 @@ def create_app(private=False):
         def dashboard():
             return Response((Path(__file__).parent / 'dashboard.html').read_text(), mimetype='text/html')
 
+        @app.get('/dashboard.css')
+        def dashboard_styles():
+            return send_file(Path(__file__).parent / 'dashboard.css', mimetype='text/css', conditional=False)
+
         @app.get('/dashboard.js')
         def dashboard_script():
             return send_file(Path(__file__).parent / 'dashboard.js', mimetype='text/javascript', conditional=False)
