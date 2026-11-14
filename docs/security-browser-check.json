@@ -15,6 +15,11 @@
     "xss": false
   },
   "password_remembered_with_sandboxed_assets": true,
+  "protected_own_script": true,
+  "cross_artifact_script_blocked": true,
+  "external_script_inclusion_blocked": true,
+  "protected_legacy_assets": true,
+  "protected_html_interactive": true,
   "token_created_once": true,
   "dashboard_no_raw_token_storage": true,
   "dashboard_access_dialog": true,

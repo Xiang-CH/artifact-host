@@ -8,6 +8,7 @@ from flask import make_response, render_template_string
 from artifact_host.storage import InvalidUpload
 
 REMEMBER = 30 * 86400
+RESOURCE_LIFETIME = 3600
 
 
 def password_fields(password):
@@ -24,6 +25,22 @@ def signature(row, expiry):
     return hmac.new(row['read_cookie_key'].encode(), (row['id'] + ':' + expiry).encode(), hashlib.sha256).hexdigest()
 
 
+def resource_grant(row):
+    expiry = str(int(time.time()) + RESOURCE_LIFETIME)
+    signed = hmac.new(row['read_cookie_key'].encode(), ('resource:' + row['id'] + ':' + expiry).encode(), hashlib.sha256).hexdigest()
+    return expiry + '.' + signed
+
+
+def valid_resource_grant(row, value):
+    if not row['read_password_hash'] or not isinstance(value, str):
+        return False
+    expiry, _, signed = value.partition('.')
+    if not (expiry.isascii() and expiry.isdigit() and len(expiry) <= 12 and time.time() < int(expiry) <= time.time() + RESOURCE_LIFETIME + 60):
+        return False
+    expected = hmac.new(row['read_cookie_key'].encode(), ('resource:' + row['id'] + ':' + expiry).encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signed, expected)
+
+
 def unlocked(row, cookies):
     if not row['read_password_hash']:
         return True
@@ -36,11 +53,10 @@ def unlocked(row, cookies):
 
 def unlock_cookie(response, row):
     expiry = str(int(time.time()) + REMEMBER)
-    # Opaque sandbox documents load relative assets as cross-site requests.
-    # None is needed for those requests; the cookie stays Secure + HttpOnly.
-    # Password POSTs separately enforce the exact read Origin.
+    # Only top-level document navigation uses this cookie. Bundle resources use
+    # short-lived artifact-scoped grants and do not need any browser cookies.
     response.set_cookie(cookie_name(row), expiry + '.' + signature(row, expiry),
-                        max_age=REMEMBER, secure=True, httponly=True, samesite='None', path='/')
+                        max_age=REMEMBER, secure=True, httponly=True, samesite='Lax', path='/')
 
 
 def check_password(row, password):

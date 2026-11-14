@@ -4,12 +4,17 @@ import unittest
 from unittest.mock import patch
 import test_service
 from artifact_host import storage
-from artifact_host.app import public_app, private_app, PUBLIC
+from artifact_host.app import public_app, private_app, PUBLIC, create_app
 from artifact_host.rate_limit import RateLimit
 
 
 class ReadAccess(unittest.TestCase):
-    setUp = test_service.Service.setUp
+    def setUp(self):
+        test_service.Service.setUp(self)
+        app = create_app(False)
+        app.config['SERVER_NAME'] = '127.0.0.1'
+        self.public = app.test_client()
+        self.public.environ_base.update(HTTP_SEC_FETCH_DEST='document', HTTP_SEC_FETCH_MODE='navigate')
     headers = test_service.Service.headers
     upload = test_service.Service.upload
 
@@ -46,7 +51,7 @@ class ReadAccess(unittest.TestCase):
         response = self.unlock(path)
         self.assertEqual(response.status_code, 303)
         self.assertIn('HttpOnly', response.headers['Set-Cookie'])
-        self.assertIn('SameSite=None', response.headers['Set-Cookie'])
+        self.assertIn('SameSite=Lax', response.headers['Set-Cookie'])
         self.assertIn('Secure', response.headers['Set-Cookie'])
         self.assertEqual(self.public.get(path).data, b'PRIVATE CONTENT')
         listing = self.private.get('/api/artifacts', headers=self.headers())

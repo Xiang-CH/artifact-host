@@ -36,7 +36,7 @@ def main():
         result['relative_image']=evaluate('document.querySelector("#asset").naturalWidth')==1
         browser('click','#interactive')
         result['interactive']=evaluate('document.querySelector("#interactive").textContent')=='Clicked'
-        markdown=upload([('README.md','# Browser Markdown\n\n![Pixel](pixel.png)\n<script>window.xss=true</script>'),('pixel.png',png)])
+        markdown=upload([('README.md','# Browser Markdown\n\n![Pixel](pixel.png)\n<script>window.xss=true</script>'),('pixel.png',png),('private.js','window.privateMarker=true;')])
         browser('open',markdown['url'])
         browser('wait','--fn','document.querySelector("img").naturalWidth === 1')
         browser('select','#document-theme','dark')
@@ -57,6 +57,50 @@ def main():
         browser('reload')
         browser('wait','--fn','document.querySelector("img")?.naturalWidth === 1')
         result['password_remembered_with_sandboxed_assets']=True
+        # A protected document can load its own classic script.
+        browser('eval', "const own=document.createElement('script');own.src='private.js';document.body.append(own);true")
+        browser('wait','--fn','window.privateMarker===true')
+        result['protected_own_script']=True
+        private_url = markdown['url'] + 'private.js'
+        # An unrelated public artifact must not execute that same resource.
+        browser('open',artifact['url'])
+        browser('eval', "window.crossDone=false;const cross=document.createElement('script');cross.src="+json.dumps(private_url)+";cross.onload=cross.onerror=()=>window.crossDone=true;document.body.append(cross);true")
+        browser('wait','--fn','window.crossDone===true')
+        assert evaluate('window.privateMarker===undefined')
+        result['cross_artifact_script_blocked']=True
+        # An external origin has no artifact CSP: the server must still refuse.
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+        external_html=('<!doctype html><script src="'+private_url+'" onerror="window.resourceDenied=true"></script>').encode()
+        class ExternalPage(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200);self.send_header('Content-Type','text/html');self.end_headers();self.wfile.write(external_html)
+            def log_message(self,*args): pass
+        external=ThreadingHTTPServer(('127.0.0.1',0),ExternalPage)
+        threading.Thread(target=external.serve_forever,daemon=True).start()
+        try:
+            browser('open','http://127.0.0.1:'+str(external.server_port)+'/')
+            browser('wait','--fn','window.resourceDenied===true')
+            assert evaluate('window.privateMarker===undefined')
+            result['external_script_inclusion_blocked']=True
+        finally:
+            external.shutdown();external.server_close()
+        # The legacy URL remains functional after unlocking through its alias.
+        legacy=EndToEnd.public+'/s/'+markdown['id']+'/'+markdown['slug']+'/'
+        browser('open',legacy)
+        browser('wait','--fn','document.querySelector("img")?.naturalWidth===1')
+        result['protected_legacy_assets']=True
+        html_access=EndToEnd.api+'/api/artifacts/'+artifact['id']+'/access'
+        with urlopen(Request(html_access,data=json.dumps({'password':'html-test-password'}).encode(),headers={'Authorization':'Bearer '+EndToEnd.owner,'Content-Type':'application/json'},method='POST')) as response:
+            assert response.status==200
+        browser('open',artifact['url'])
+        browser('wait','--fn','!!document.getElementById("password")')
+        browser('fill','#password','html-test-password')
+        browser('click','form button')
+        browser('wait','--fn','window.checks?.externalScript && document.querySelector("#asset").naturalWidth===1')
+        browser('click','#interactive')
+        assert evaluate('document.getElementById("interactive").textContent==="Clicked" && window.checks.cookiesBlocked')
+        result['protected_html_interactive']=True
         browser('open',EndToEnd.api)
         browser('fill','#key',EndToEnd.owner)
         browser('click','#load')

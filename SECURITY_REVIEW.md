@@ -45,3 +45,14 @@ The 23-test suite passed on macOS/Python 3.11 and Aliyun Ubuntu/Python 3.12. Tes
 The declared service/MCP dependency resolution was checked with pip-audit with no known vulnerabilities reported. Flask and Pygments were updated; the discontinued Bleach sanitizer was replaced with nh3. Audit results describe the checked versions and advisory database at review time, not a permanent guarantee.
 
 No public hostname, Cloudflare routing or Alibaba CDN changes were made. Real public HTTPS/CDN behavior remains unverified until the dedicated hostname is configured. Browser sandboxing blocks subresource/API access but does not prevent a script navigating its own tab to an external URL. Already-open responses and downloaded copies cannot be recalled. Same-user/root filesystem compromise is outside the service boundary. See README for exact limits, proxy logging requirements and recovery procedures.
+
+
+## Password isolation follow-up
+
+The full-service review at `cc97884` confirmed a high-severity issue: origin-wide CSP plus SameSite=None read cookies allowed an unrelated public HTML document to execute a password-protected classic script after the visitor had unlocked it. A benign local Chromium regression demonstrated cross-artifact access to a synthetic marker. HttpOnly did not prevent authenticated script inclusion.
+
+The fix accepts remembered read cookies only on browser top-level document navigations. Private resource requests require separate HMAC-signed, one-hour grants bound to the current artifact and its current password key, and recheck artifact expiry/revocation. Protected HTML/Markdown streams an initial base pointing to that grant directory; no resource Cookie or Referer is needed. Cookie scope returns to SameSite=Lax. CSP limits scripts/styles/images/fonts and bases to the current artifact/resource directory. Automatic subresource redirects are blocked, and slash-merging redirects are disabled. Original share URLs remain valid.
+
+Regression coverage: `tests/test_isolation.py` checks cookie context rejection, CSP scoping, redirect blocking, anonymous scoped-resource access, grant expiry, tampering, cross-artifact use, password rotation and revoke. `tests/browser_check.py` proves that a private page can load its own script/image, while both unrelated public HTML and an external origin cannot execute that private script. The original opaque-origin/storage/cookie/fetch restrictions, Markdown rendering/theme and dashboard flows remain covered. Resource URLs are short-lived read capabilities and must not be shared or logged; expired open-page resources require refreshing the original share URL.
+
+CSP redirect behavior is specified in the [W3C URL-to-source matching algorithm](https://www.w3.org/TR/CSP3/#match-url-to-source-expression).

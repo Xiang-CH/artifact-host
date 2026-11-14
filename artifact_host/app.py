@@ -11,7 +11,8 @@ import time
 import zipfile
 import base64
 from pathlib import Path
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, quote
+from html import escape
 
 from flask import Flask, Response, abort, current_app, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
@@ -20,6 +21,7 @@ from artifact_host import storage
 from artifact_host.rendering import CACHE_DIR, render_bundle
 from artifact_host import read_access
 from artifact_host.rate_limit import RateLimit, client_address
+from artifact_host.isolation import DENY_CSP, content_policy, remembered_read_context, resource_paths
 
 ROOT = storage.ROOT
 PUBLIC = os.environ.get('PUBLIC_URL', 'http://127.0.0.1:8792').rstrip('/')
@@ -31,7 +33,7 @@ if PUBLIC_PARTS.scheme == 'http' and PUBLIC_PARTS.hostname not in ('127.0.0.1', 
     raise RuntimeError('Public non-loopback URLs require HTTPS')
 storage.initialize()
 
-ARTIFACT_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline' 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+ARTIFACT_CSP = DENY_CSP
 
 def token(owner=False):
     with storage.database() as connection:
@@ -75,6 +77,8 @@ def file_name(name):
 
 def create_app(private=False):
     app = Flask(__name__)
+    if not private:
+        app.url_map.merge_slashes = False
     private_origin = os.environ.get('PRIVATE_ORIGIN')
     private_hosts = os.environ.get('PRIVATE_HOSTS', 'localhost,127.0.0.1,[::1]').split(',')
     if private_origin:
@@ -115,13 +119,19 @@ def create_app(private=False):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=(), payment=()'
         response.headers['Content-Security-Policy'] = (
-            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" if private else ARTIFACT_CSP)
+            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" if private else getattr(response, 'artifact_policy', ARTIFACT_CSP))
         if getattr(response, 'password_prompt', False):
             response.headers['Content-Security-Policy'] = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
             # no-referrer makes HTML form navigation serialize Origin as null.
             # Keep exact-Origin CSRF validation while suppressing external referrers.
             response.headers['Referrer-Policy'] = 'same-origin'
         response.headers['X-Frame-Options'] = 'DENY'
+        if not private and 300 <= response.status_code < 400 and request.method in ('GET', 'HEAD') and request.headers.get('Sec-Fetch-Dest') not in (None, '', 'document'):
+            # CSP drops source-path checks after redirects. Do not provide a
+            # redirect trampoline for browser subresources.
+            response.status_code = 403
+            response.headers.pop('Location', None)
+            response.set_data(b'Forbidden')
         return response
 
     @app.errorhandler(Exception)
@@ -403,6 +413,19 @@ def create_app(private=False):
                 connection.execute('UPDATE artifacts SET size=0 WHERE id=?', (identifier,))
             return '', 204
     else:
+        @app.get('/_r/<identifier>/<grant>/', defaults={'name': None})
+        @app.get('/_r/<identifier>/<grant>/<path:name>')
+        def serve_resource(identifier, grant, name):
+            if not storage.ID_PATTERN.fullmatch(identifier) or len(grant) > 80:
+                abort(404)
+            with storage.database() as connection:
+                row = connection.execute('SELECT * FROM artifacts WHERE id=?', (identifier,)).fetchone()
+            if row is None or row['revoked'] or (row['expires'] is not None and row['expires'] <= time.time()):
+                abort(404)
+            if not read_access.valid_resource_grant(row, grant):
+                abort(403)
+            return serve_file(row, name, grant)
+
         @app.route('/s/<identifier>/', defaults={'name': None}, methods=['GET', 'POST'])
         @app.route('/s/<identifier>/<path:name>', methods=['GET', 'POST'])
         def serve(identifier, name):
@@ -428,9 +451,14 @@ def create_app(private=False):
                 row = connection.execute('SELECT artifacts.* FROM artifacts JOIN aliases ON aliases.artifact_id=artifacts.id WHERE aliases.slug=?', (short_slug,)).fetchone()
             return serve_file(row, name)
 
-        def serve_file(row, name):
+        def serve_file(row, name, grant=None):
             if row is None or row['revoked'] or (row['expires'] is not None and row['expires'] <= time.time()):
                 abort(404)
+            with storage.database() as connection:
+                alias = connection.execute('SELECT slug FROM aliases WHERE artifact_id=?', (row['id'],)).fetchone()
+            paths = resource_paths(row, alias['slug'] if alias and app.config['READABLE_URLS'] else None)
+            resource_prefix = '/_r/' + row['id'] + '/' + (grant or read_access.resource_grant(row)) + '/' if row['read_password_hash'] else None
+            policy = content_policy(PUBLIC, [resource_prefix] if resource_prefix else paths, resource_base=bool(resource_prefix))
             if request.method == 'POST':
                 if not row['read_password_hash']:
                     abort(405)
@@ -456,12 +484,39 @@ def create_app(private=False):
                 response = read_access.password_page(failed=True)
                 response.password_prompt = True
                 return response
-            if not read_access.unlocked(row, request.cookies):
+            if grant is None and not read_access.unlocked(row, request.cookies):
                 response = read_access.password_page()
                 response.password_prompt = True
                 return response
+            if grant is None and row['read_password_hash'] and not remembered_read_context(request.headers):
+                abort(403)
             identifier = row['id']
             name = name or row['entry']
+
+            def html_response(source):
+                if resource_prefix:
+                    # First base wins. CSP allows only this resource directory;
+                    # later uploaded bases cannot authorize a different bundle.
+                    # No cookie is required on relative scripts/images/CSS.
+                    parent = Path(name).parent.as_posix()
+                    directory = '' if parent == '.' else quote(parent, safe='/') + '/'
+                    base = PUBLIC + resource_prefix + directory
+                    prefix = b'<!doctype html><base href="' + escape(base, quote=True).encode() + b'">'
+                    def body():
+                        try:
+                            yield prefix
+                            while block := source.read(65536):
+                                yield block
+                        finally:
+                            source.close()
+                    response = Response(body(), mimetype='text/html')
+                    response.content_length = len(prefix) + os.fstat(source.fileno()).st_size
+                    response.call_on_close(source.close)
+                else:
+                    response = send_file(source, mimetype='text/html', conditional=False, etag=False)
+                    response.call_on_close(source.close)
+                response.artifact_policy = policy
+                return response
             try:
                 file_name(name)
                 source = storage.open_artifact(identifier, name)
@@ -473,13 +528,14 @@ def create_app(private=False):
                         rendered = None
                     if rendered is not None:
                         source.close()
-                        response = send_file(rendered, mimetype='text/html', conditional=False, etag=False)
-                        response.call_on_close(rendered.close)
-                        return response
+                        return html_response(rendered)
+                if extension == '.html':
+                    return html_response(source)
                 types = {'.html':'text/html', '.css':'text/css', '.js':'text/javascript', '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.gif':'image/gif', '.webp':'image/webp', '.pdf':'application/pdf'}
                 response = send_file(source, mimetype=types.get(extension, 'application/octet-stream'),
                     as_attachment=extension not in types, download_name=Path(name).name, conditional=False, etag=False)
                 response.call_on_close(source.close)
+                response.artifact_policy = policy
                 return response
             except (OSError, storage.InvalidUpload):
                 abort(404)
