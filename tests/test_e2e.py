@@ -63,6 +63,24 @@ class EndToEnd(unittest.TestCase):
         code,body,_=self.request('POST','/api/tokens',secret=self.owner)
         self.assertEqual(code,201);return json.loads(body)
 
+    def test_idle_http_connections_do_not_block_reader(self):
+        # Chromium can preconnect without completing a request. Two such
+        # connections must not occupy every public worker until its timeout.
+        connections = []
+        try:
+            for _ in range(2):
+                connection = socket.create_connection(('127.0.0.1', self.public_port), timeout=1)
+                connections.append(connection)
+                connection.sendall(b'GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n')
+                connection.settimeout(.1)
+                with self.assertRaises(socket.timeout):
+                    connection.recv(1)
+            with urlopen(self.public_base+'/health', timeout=1) as response:
+                self.assertEqual(response.status, 200)
+        finally:
+            for connection in connections:
+                connection.close()
+
     def test_cli_and_http_auth_and_revoke(self):
         agent=self.agent();file=self.directory/'report.md';file.write_text('# CLI report')
         env=dict(self.env,ARTIFACT_API=self.api,ARTIFACT_TOKEN=agent['token'])

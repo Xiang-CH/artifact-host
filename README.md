@@ -154,4 +154,6 @@ To share an existing portal hostname, set `PUBLIC_URL=https://server.cxiang.site
 
 Include `deployment/nginx-paths-http.conf.template` inside Nginx's `http {}` and `deployment/nginx-paths-locations.conf.template` inside the existing portal HTTPS server, replacing `@HOST@`. Preserve the `/a` prefix in `proxy_pass`. Set the remote MCP's `MCP_ORIGIN` to the portal origin; its endpoint remains `/mcp`. The locations preserve the portal root, apply independent read/MCP limits, suppress artifact request logs and disable MCP buffering. Existing dedicated-host templates remain supported. To retain existing Tailnet read/MCP URLs during migration, keep their original listeners and run the mounted public and new-origin MCP listeners on separate loopback ports, substituting those ports in the locations.
 
+Gunicorn uses two workers with four bounded threads each so Chromium speculative connections or partial headers cannot consume both workers. A real socket regression covers this alongside the existing slow-upload/revocation tests. Both Nginx templates rewrite same-host upstream HTTP redirects to HTTPS.
+
 The unittest suite covers root and mounted CLI/HTTP/MCP flows. CI runs the full Chromium flow at both mounts and validates both Nginx templates on disposable listeners.

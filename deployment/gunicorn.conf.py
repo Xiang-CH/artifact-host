@@ -1,8 +1,9 @@
-# Two synchronous processes let revocation proceed during one slow upload.
-# flock bounds uploads across processes; timeout terminates a stalled worker.
+# Bounded threads keep speculative/partial HTTP connections from consuming both
+# workers. Upload locking still bounds writers across processes and threads.
 workers = 2
-worker_class = 'sync'
-threads = 1
+worker_class = 'gthread'
+threads = 4
+worker_connections = 64
 timeout = 30
 graceful_timeout = 10
 limit_request_line = 4094

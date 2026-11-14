@@ -22,6 +22,11 @@ def main(paths=False):
     if not nginx:raise RuntimeError('nginx is required for this separate integration check')
     class Upstream(BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path.endswith('/slash'):
+                self.send_response(308)
+                self.send_header('Location','http://'+self.headers['Host']+self.path+'/')
+                self.end_headers()
+                return
             self.send_response(200)
             if self.path.endswith('/cookie-migration/'):
                 for index in range(60):self.send_header('Set-Cookie','fixture_'+str(index)+'='+('x'*180)+'; Path=/fixture/; Secure; HttpOnly')
@@ -63,6 +68,9 @@ def main(paths=False):
                     except OSError:time.sleep(.02)
                 else:raise RuntimeError('Disposable nginx did not start')
                 assert request(0,'GET',('/a' if paths else '')+'/cookie-migration/')[0]==200,'Migration response headers exceeded proxy buffer'
+                status, headers, _ = request(0,'GET',('/a' if paths else '')+'/slash')
+                host = 'portal' if paths else 'read'
+                assert status == 308 and headers['Location'] == 'https://'+host+'.artifact-test.invalid'+('/a' if paths else '')+'/slash/'
                 if paths:
                     assert request(0,'GET','/')[2]==b'portal'
                     assert request(0,'GET')[2]==b'upstream:/a/file/'
