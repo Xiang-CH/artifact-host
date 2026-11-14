@@ -138,3 +138,9 @@ Tests select a new temporary ARTIFACT_DATA before application imports and refuse
 
 
 Access-setting requests authenticate and check ownership before reading their bounded JSON bodies, then recheck authorization/state/ownership under the final SQLite write transaction. Slow body receipt and password hashing hold no writer lock, so another worker can revoke the caller. Browser password inputs defer length validation to the server's Unicode code-point convention (8–128 characters), including astral characters such as emoji. Successful canceled saves refresh list metadata while generation checks continue to protect the currently open editor. The Nginx read template reserves a 32 KiB proxy header buffer for bounded legacy-cookie migration responses.
+
+## Continuous integration
+
+GitHub Actions runs on every pull request, including non-default target branches, and on pushes to main. The workflow also supports merge queues and manual runs. It executes the complete unittest suite on Python 3.11 and 3.12, the real Chromium security/UI flow, and disposable Nginx TLS/rate-limit/migration-header checks. The `All tests` check succeeds only if every group succeeds; failed or skipped groups cannot produce a successful gate.
+
+Jobs use hosted Ubuntu runners, temporary test data and synthetic credentials. They need no production secrets, Tailnet access or SSH. Action versions are pinned to commit SHAs, agent-browser is pinned to the locally verified version, and workflow permissions are contents-read only. Test output and freshly generated browser evidence are retained as GitHub Actions artifacts for seven days. Main requires the `All tests` check before accepting changes.
