@@ -3,6 +3,7 @@ const element = id => document.getElementById(id);
 let offset = 0;
 let files = [];
 let category = 'active';
+let listGeneration = 0;
 const theme = element('theme');
 try { theme.value = localStorage.getItem('artifact-theme') || 'system'; } catch (_) {}
 function applyTheme() {
@@ -68,8 +69,10 @@ function render() {
   }
 }
 async function load() {
+  const generation = ++listGeneration;
   const artifacts = await api('GET', '/api/artifacts?category=' + category + '&offset=' + offset);
   const tokens = await api('GET', '/api/tokens');
+  if (generation !== listGeneration) return;
   files = artifacts;render();element('tokens').replaceChildren();
   element('connection').textContent = '已登录 · Owner';
   element('login-panel').classList.add('connected');
@@ -99,6 +102,7 @@ element('new-token').addEventListener('click', () => run(async () => {
 }));
 element('forget').addEventListener('click', () => run(async () => {
   await api('DELETE','/api/session');
+  listGeneration++;
   element('login-panel').classList.remove('connected');
   element('key').value = ''; files = [];element('artifacts').replaceChildren();
   element('tokens').replaceChildren();element('status').textContent = '';offset = 0;

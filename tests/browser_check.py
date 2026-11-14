@@ -9,7 +9,10 @@ from test_e2e import EndToEnd
 
 SESSION = 'artifact-security-regression'
 def browser(*args):
-    result = subprocess.run(['agent-browser','--session',SESSION,*args],check=True,capture_output=True,text=True,timeout=30)
+    result = subprocess.run(['agent-browser','--session',SESSION,*args],capture_output=True,text=True,timeout=30)
+    if result.returncode:
+        # Report the tool's diagnostic without echoing arguments/passwords.
+        raise RuntimeError('agent-browser '+args[0]+' failed: '+(result.stderr or result.stdout).strip())
     return result.stdout.strip()
 def evaluate(code):
     value = json.loads(browser('eval','(async()=>JSON.stringify(await ('+code+')))()'))
@@ -32,6 +35,7 @@ def main():
         artifact=upload([('index.html',html),('app.js','window.checks.externalScript=true;'),('pixel.png',png)])
         browser('open',artifact['url'])
         browser('wait','--fn','window.checks && window.checks.fetchBlocked && window.checks.externalScript')
+        browser('wait','--fn','document.querySelector("#asset").naturalWidth===1')
         result['sandbox']=evaluate('window.checks')
         result['relative_image']=evaluate('document.querySelector("#asset").naturalWidth')==1
         browser('click','#interactive')
@@ -105,6 +109,26 @@ def main():
         browser('fill','#key',EndToEnd.owner)
         browser('click','#load')
         browser('wait','--fn','document.querySelectorAll("#artifacts p").length === 2')
+        # Resolve a newer Archive load before an older Active load.
+        navigation_race = evaluate("""(async()=>{
+          const originalApi=api;
+          const previousCategory=category, previousOffset=offset, previousFilter=element('filter').value;
+          const fixture=files.slice();const pending=[];
+          api=(method,path)=>path.startsWith('/api/artifacts?')
+            ? new Promise(resolve=>pending.push(resolve))
+            : path==='/api/tokens'?Promise.resolve([]):originalApi(method,path);
+          try {
+            category='active';element('filter').value='active';const older=load();
+            category='archive';element('filter').value='all';const newer=load();
+            pending[1]([{...fixture[0],revoked:1}]);await newer;
+            pending[0]([{...fixture[1],revoked:0}]);await older;
+            return files.length===1 && files[0].revoked===1 && element('artifacts').textContent.includes('已撤销');
+          } finally {
+            api=originalApi;category=previousCategory;offset=previousOffset;element('filter').value=previousFilter;await load();
+          }
+        })()""")
+        assert navigation_race,'Older list response replaced the current category'
+        result['stale_list_response_ignored']=True
         # Release a stale save after the user has opened a different editor.
         race_check = evaluate("""(async()=>{
           const originalFetch=window.fetch;
@@ -185,16 +209,40 @@ def main():
         browser('click','#archive-nav')
         browser('wait','--fn','document.querySelector("#artifacts").textContent.includes("已撤销")')
         result['artifact_revoked']=True
-        browser('click','#forget')
+        logout_race=evaluate("""(async()=>{
+          const originalApi=api;
+          let releaseTokens, ready;
+          const tokenRequest=new Promise(resolve=>{ready=resolve;});
+          api=(method,path)=>path==='/api/tokens'
+            ? new Promise(resolve=>{releaseTokens=resolve;ready();})
+            : originalApi(method,path);
+          try {
+            const pending=load();await tokenRequest;
+            const loggedOut=new Promise(resolve=>{
+              const observer=new MutationObserver(()=>{
+                if(element('connection').textContent==='尚未连接'){observer.disconnect();resolve();}
+              });
+              observer.observe(element('connection'),{childList:true});
+            });
+            element('forget').click();await loggedOut;
+            releaseTokens([]);await pending;
+            return element('connection').textContent==='尚未连接' && files.length===0 && element('artifacts').childElementCount===0;
+          } finally {api=originalApi;}
+        })()""")
+        assert logout_race,'Late metadata response restored a logged-out workspace'
+        result['late_list_response_after_logout_ignored']=True
+        browser('wait','--fn','document.querySelector("#connection").textContent==="尚未连接" && document.querySelectorAll("#artifacts p").length===0')
         result['forgotten']=evaluate('document.querySelector("#key").value==="" && document.querySelectorAll("#artifacts p").length===0')
-        assert all(result['sandbox'].values()) and all(result[k] for k in ('relative_image','interactive','token_created_once','dashboard_no_raw_token_storage','token_revoked','artifact_revoked','forgotten'))
+        assert all(result['sandbox'].values()) and all(result[k] for k in ('relative_image','interactive','token_created_once','dashboard_no_raw_token_storage','token_revoked','artifact_revoked','forgotten')), json.dumps(result,ensure_ascii=False)
         assert result['markdown']=={'heading':'Browser Markdown','image':1,'xss':False}
         destination=Path(__file__).resolve().parents[1]/'docs/security-browser-check.json'
         destination.parent.mkdir(exist_ok=True)
         destination.write_text(json.dumps(result,indent=2)+'\n')
         print('Browser security checks passed; evidence: docs/security-browser-check.json')
     finally:
-        browser('close')
-        EndToEnd.tearDownClass()
+        try:
+            browser('close')
+        finally:
+            EndToEnd.tearDownClass()
 
 if __name__=='__main__':main()

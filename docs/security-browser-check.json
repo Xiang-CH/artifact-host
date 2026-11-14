@@ -20,6 +20,7 @@
   "external_script_inclusion_blocked": true,
   "protected_legacy_assets": true,
   "protected_html_interactive": true,
+  "stale_list_response_ignored": true,
   "stale_access_save_does_not_mutate_new_editor": true,
   "canceled_save_refreshes_access_metadata": true,
   "token_created_once": true,
@@ -28,5 +29,6 @@
   "dashboard_access_dialog": true,
   "token_revoked": true,
   "artifact_revoked": true,
+  "late_list_response_after_logout_ignored": true,
   "forgotten": true
 }

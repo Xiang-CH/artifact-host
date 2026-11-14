@@ -72,7 +72,7 @@ class EndToEnd(unittest.TestCase):
         items=json.loads(self.request('GET','/api/artifacts',secret=agent['token'])[1])
         identifier=next(item['id'] for item in items if urlsplit(item['url']).path==path)
         short_alias=subprocess.run([sys.executable,'artifact','--alias',identifier,'--slug','cli-report'],cwd=REPO,env=env,capture_output=True)
-        self.assertEqual(short_alias.returncode,0)
+        self.assertEqual(short_alias.returncode,0,short_alias.stderr.decode())
         no_auth=dict(env,ARTIFACT_TOKEN='')
         for args in ([str(file)],['--revoke',identifier]):
             result=subprocess.run([sys.executable,'artifact',*args],cwd=REPO,env=no_auth,capture_output=True)
