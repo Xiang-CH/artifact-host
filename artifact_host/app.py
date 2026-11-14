@@ -465,7 +465,9 @@ def create_app(private=False):
                 if request.headers.get('Origin') != PUBLIC:
                     abort(403)
                 source = client_address(request.remote_addr, request.headers, os.environ.get('ARTIFACT_TRUST_PROXY_IP') == '1')
-                retry = max(password_total.check('all'), password_attempts.check(source))
+                retry = password_attempts.check(source)
+                if not retry:
+                    retry = password_total.check('all')
                 if retry:
                     return Response('Too many attempts. Try again later.', status=429, headers={'Retry-After': str(retry)})
                 raw = request.stream.read(2049)

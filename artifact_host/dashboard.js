@@ -111,8 +111,11 @@ element('next').addEventListener('click', () => run(async () => { offset += 100;
 (async () => { try { await api('GET','/api/identity'); await load(); } catch (_) { /* First visit needs login. */ } })();
 
 let accessFile;
+let accessGeneration = 0;
 function openReadAccess(file) {
+  accessGeneration++;
   accessFile = file;
+  element('access-save').disabled = false;
   element('access-name').textContent = file.short_slug || file.entry;
   element('read-private').checked = !!file.password_protected;
   element('read-password').value = '';
@@ -124,13 +127,34 @@ function updateReadInput() {
   element('read-password').required = element('read-private').checked;
 }
 element('read-private').addEventListener('change', updateReadInput);
-element('access-cancel').addEventListener('click', () => {element('read-access').close();element('read-password').value='';});
-element('read-access').addEventListener('close', () => {element('read-password').value='';});
+function closeReadAccess() {
+  accessGeneration++;
+  element('read-access').close();
+  element('read-password').value='';
+  element('access-save').disabled=false;
+}
+element('access-cancel').addEventListener('click', closeReadAccess);
+element('read-access').addEventListener('cancel', event => {event.preventDefault();closeReadAccess();});
+element('read-access').addEventListener('close', () => {
+  // A queued close event for A may arrive after B has already been opened.
+  if (!element('read-access').open) {
+    accessGeneration++;
+    element('read-password').value='';
+    element('access-save').disabled=false;
+  }
+});
 element('read-access-form').addEventListener('submit', async event => {
-  event.preventDefault();const submit = event.submitter;submit.disabled=true;
+  event.preventDefault();const submit = event.submitter || element('access-save');submit.disabled=true;
+  const generation = accessGeneration;
+  const fileId = accessFile.id;
   try {
-    await api('POST','/api/artifacts/'+encodeURIComponent(accessFile.id)+'/access', {password:element('read-private').checked ? element('read-password').value : ''});
-    element('read-access').close();await load();
-  } catch (error) {element('access-error').textContent=error.message;}
-  finally {element('read-password').value='';submit.disabled=false;}
+    await api('POST','/api/artifacts/'+encodeURIComponent(fileId)+'/access', {password:element('read-private').checked ? element('read-password').value : ''});
+    if (generation !== accessGeneration) return;
+    await load();
+    if (generation === accessGeneration) closeReadAccess();
+  } catch (error) {
+    if (generation === accessGeneration) element('access-error').textContent=error.message;
+  } finally {
+    if (generation === accessGeneration) {element('read-password').value='';submit.disabled=false;}
+  }
 });

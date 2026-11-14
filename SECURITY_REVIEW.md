@@ -56,3 +56,8 @@ The fix accepts remembered read cookies only on browser top-level document navig
 Regression coverage: `tests/test_isolation.py` checks cookie context rejection, CSP scoping, redirect blocking, anonymous scoped-resource access, grant expiry, tampering, cross-artifact use, password rotation and revoke. `tests/browser_check.py` proves that a private page can load its own script/image, while both unrelated public HTML and an external origin cannot execute that private script. The original opaque-origin/storage/cookie/fetch restrictions, Markdown rendering/theme and dashboard flows remain covered. Resource URLs are short-lived read capabilities and must not be shared or logged; expired open-page resources require refreshing the original share URL.
 
 CSP redirect behavior is specified in the [W3C URL-to-source matching algorithm](https://www.w3.org/TR/CSP3/#match-url-to-source-expression).
+
+
+## CodeRabbit PR #1 follow-up
+
+The external review identified source-rejected requests consuming the shared authentication allowance, an asynchronous access-dialog save affecting a newer edit, and standalone isolation-test imports selecting the wrong data directory. The review summary also noted missing Retry-After on Nginx-generated 429 responses. Source admission now precedes shared-budget consumption in both password and MCP handlers; dialog generation checks isolate response/error/cleanup effects; test bootstrap selects and verifies its owned temporary root before importing the application. Regression tests preserve sentinel service data even when storage was preloaded. The Nginx template supplies explicit read/MCP retry responses, checked with disposable local TLS listeners. Existing public ingress remains disabled.

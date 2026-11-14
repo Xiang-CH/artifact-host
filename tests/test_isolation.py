@@ -1,9 +1,9 @@
 import unittest
 from unittest.mock import patch
 from flask import redirect
+import test_service
 from artifact_host.app import PUBLIC, create_app
 from artifact_host.isolation import content_policy, remembered_read_context, resource_paths
-import test_service
 
 
 class Isolation(unittest.TestCase):

@@ -12,7 +12,7 @@ def browser(*args):
     result = subprocess.run(['agent-browser','--session',SESSION,*args],check=True,capture_output=True,text=True,timeout=30)
     return result.stdout.strip()
 def evaluate(code):
-    value = json.loads(browser('eval','JSON.stringify('+code+')'))
+    value = json.loads(browser('eval','(async()=>JSON.stringify(await ('+code+')))()'))
     return json.loads(value) if isinstance(value,str) else value
 
 def main():
@@ -105,6 +105,31 @@ def main():
         browser('fill','#key',EndToEnd.owner)
         browser('click','#load')
         browser('wait','--fn','document.querySelectorAll("#artifacts p").length === 2')
+        # Release a stale save after the user has opened a different editor.
+        race_check = evaluate("""(async()=>{
+          const originalFetch=window.fetch;
+          let release;
+          window.fetch=(url,options)=>String(url).endsWith('/access') && options?.method==='POST'
+            ? new Promise(resolve=>{release=code=>resolve(new Response(JSON.stringify(code===200?{}:{error:'old save failed'}),{status:code,headers:{'Content-Type':'application/json'}}));})
+            : originalFetch(url,options);
+          try {
+            for (const status of [200,400]) {
+              openReadAccess(files[0]);
+              element('read-private').checked=true;updateReadInput();element('read-password').value='first-edit-password';
+              element('read-access-form').requestSubmit(element('access-save'));
+              element('access-cancel').click();
+              openReadAccess(files[1]);
+              element('read-private').checked=true;updateReadInput();element('read-password').value='second-edit-password';
+              release(status);
+              await new Promise(resolve=>setTimeout(resolve,0));
+              if (!element('read-access').open || accessFile.id!==files[1].id || element('read-password').value!=='second-edit-password' || element('access-error').textContent!=='' || element('access-save').disabled) return false;
+              closeReadAccess();
+            }
+            return true;
+          } finally {window.fetch=originalFetch;closeReadAccess();}
+        })()""")
+        assert race_check
+        result['stale_access_save_does_not_mutate_new_editor']=True
         browser('eval', 'document.querySelector("#token-details summary").scrollIntoView({block:"center"})')
         browser('click','#token-details summary')
         browser('wait','--fn','document.getElementById("token-details").open')

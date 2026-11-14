@@ -35,3 +35,20 @@ class RateLimits(unittest.TestCase):
                     self.assertIn('Retry-After', result.headers)
                 self.assertEqual((await client.get('/health')).status_code, 200)
         asyncio.run(check())
+
+    def test_source_rejections_preserve_mcp_global_capacity(self):
+        async def check():
+            async def unreachable(*args):
+                self.fail('Missing token reached MCP')
+            gateway=GatewayBoundary(unreachable,'http://localhost','http://127.0.0.1:1',8192,4)
+            gateway.trust_proxy=True
+            gateway.attempts=RateLimit(2,1,clock=lambda:0)
+            gateway.total_attempts=RateLimit(3,1,clock=lambda:0)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway,client=('127.0.0.1',1)),base_url='http://localhost') as client:
+                for _ in range(2):
+                    self.assertEqual((await client.post('/mcp',headers={'X-Real-IP':'192.0.2.1'})).status_code,401)
+                for _ in range(30):
+                    self.assertEqual((await client.post('/mcp',headers={'X-Real-IP':'192.0.2.1'})).status_code,429)
+                self.assertEqual((await client.post('/mcp',headers={'X-Real-IP':'192.0.2.2'})).status_code,401)
+                self.assertEqual((await client.post('/mcp',headers={'X-Real-IP':'192.0.2.3'})).status_code,429)
+        asyncio.run(check())

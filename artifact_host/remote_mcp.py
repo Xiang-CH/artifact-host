@@ -75,7 +75,9 @@ class GatewayBoundary:
         if scope['path'] != '/mcp':
             return await reject(404, 'Not found')
         source = client_address(peer[0], headers, self.trust_proxy)
-        retry = max(self.total_attempts.check('all'), self.attempts.check(source))
+        retry = self.attempts.check(source)
+        if not retry:
+            retry = self.total_attempts.check('all')
         if retry:
             return await reject(429, 'Too many authentication attempts', retry)
         authorization = headers.getlist('authorization')

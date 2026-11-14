@@ -14,14 +14,19 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-os.environ['ARTIFACT_DATA'] = tempfile.mkdtemp(prefix='artifact-tests-')
+TEST_ROOT = Path(tempfile.mkdtemp(prefix='artifact-tests-'))
+os.environ['ARTIFACT_DATA'] = str(TEST_ROOT)
 from artifact_host import storage
+if storage.ROOT != TEST_ROOT:
+    raise RuntimeError('Tests require their own data root; storage was already imported')
 from artifact_host.app import private_app, public_app, token, create_app
 from artifact_host.rendering import MAX_MARKDOWN
 public_app.config['SERVER_NAME'] = '127.0.0.1'
 
 class Service(unittest.TestCase):
     def setUp(self):
+        if storage.ROOT != TEST_ROOT:
+            raise RuntimeError('Refusing to clean a non-test data root')
         for p in storage.ROOT.iterdir():
             if p.is_dir(): shutil.rmtree(p)
         with storage.database() as c:

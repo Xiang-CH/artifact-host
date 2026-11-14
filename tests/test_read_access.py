@@ -90,3 +90,18 @@ class ReadAccess(unittest.TestCase):
                 response = self.unlock(path, 'wrong')
                 self.assertEqual(response.status_code, 429)
                 self.assertGreater(int(response.headers['Retry-After']), 0)
+
+    def test_source_rejections_preserve_password_global_capacity(self):
+        from artifact_host.rate_limit import RateLimit
+        with patch('artifact_host.app.RateLimit',side_effect=lambda burst,rate:RateLimit(burst,rate,clock=lambda:0)):
+            app=create_app(False)
+        app.config['SERVER_NAME']='127.0.0.1'
+        self.public=app.test_client()
+        _,path=self.protected()
+        with patch('artifact_host.read_access.check_password',return_value=False) as verify:
+            with patch('artifact_host.app.client_address',return_value='192.0.2.1'):
+                for _ in range(5):self.assertEqual(self.unlock(path,'wrong').status_code,401)
+                for _ in range(30):self.assertEqual(self.unlock(path,'wrong').status_code,429)
+            with patch('artifact_host.app.client_address',return_value='192.0.2.2'):
+                self.assertEqual(self.unlock(path,'wrong').status_code,401)
+            self.assertEqual(verify.call_count,6)
