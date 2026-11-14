@@ -35,6 +35,7 @@ def main():
         artifact=upload([('index.html',html),('app.js','window.checks.externalScript=true;'),('pixel.png',png)])
         browser('open',artifact['url'])
         browser('wait','--fn','window.checks && window.checks.fetchBlocked && window.checks.externalScript')
+        browser('wait','--fn','document.querySelector("#asset").naturalWidth===1')
         result['sandbox']=evaluate('window.checks')
         result['relative_image']=evaluate('document.querySelector("#asset").naturalWidth')==1
         browser('click','#interactive')
@@ -189,8 +190,9 @@ def main():
         browser('wait','--fn','document.querySelector("#artifacts").textContent.includes("已撤销")')
         result['artifact_revoked']=True
         browser('click','#forget')
+        browser('wait','--fn','document.querySelector("#connection").textContent==="尚未连接" && document.querySelectorAll("#artifacts p").length===0')
         result['forgotten']=evaluate('document.querySelector("#key").value==="" && document.querySelectorAll("#artifacts p").length===0')
-        assert all(result['sandbox'].values()) and all(result[k] for k in ('relative_image','interactive','token_created_once','dashboard_no_raw_token_storage','token_revoked','artifact_revoked','forgotten'))
+        assert all(result['sandbox'].values()) and all(result[k] for k in ('relative_image','interactive','token_created_once','dashboard_no_raw_token_storage','token_revoked','artifact_revoked','forgotten')), json.dumps(result,ensure_ascii=False)
         assert result['markdown']=={'heading':'Browser Markdown','image':1,'xss':False}
         destination=Path(__file__).resolve().parents[1]/'docs/security-browser-check.json'
         destination.parent.mkdir(exist_ok=True)
