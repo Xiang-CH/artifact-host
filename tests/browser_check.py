@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import zipfile
+from urllib.request import Request, urlopen
 from test_e2e import EndToEnd
 
 SESSION = 'artifact-security-regression'
@@ -50,7 +51,6 @@ def main():
         result['markdown_theme_persisted']=True
         result['markdown']=evaluate('({heading:document.querySelector("h1").textContent,image:document.querySelector("img").naturalWidth,xss:!!window.xss})')
         # Existing upload becomes password-protected, including relative assets.
-        from urllib.request import Request, urlopen
         access_path = EndToEnd.api + '/api/artifacts/' + markdown['id'] + '/access'
         with urlopen(Request(access_path, data=json.dumps({'password':'browser-test-password'}).encode(), headers={'Authorization':'Bearer '+EndToEnd.owner,'Content-Type':'application/json'}, method='POST')) as response:
             assert response.status == 200
