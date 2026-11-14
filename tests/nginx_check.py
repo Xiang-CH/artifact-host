@@ -22,7 +22,10 @@ def main():
     if not nginx:raise RuntimeError('nginx is required for this separate integration check')
     class Upstream(BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(200);self.end_headers();self.wfile.write(b'upstream')
+            self.send_response(200)
+            if self.path=='/cookie-migration/':
+                for index in range(60):self.send_header('Set-Cookie','fixture_'+str(index)+'='+('x'*180)+'; Path=/fixture/; Secure; HttpOnly')
+            self.end_headers();self.wfile.write(b'upstream')
         do_POST=do_GET
         def log_message(self,*args):pass
     upstream=ThreadingHTTPServer(('127.0.0.1',0),Upstream)
@@ -39,10 +42,10 @@ def main():
             command=[nginx,'-p',str(root),'-c',str(root/'nginx.conf')]
             subprocess.run(command+['-t'],check=True,capture_output=True)
             process=subprocess.Popen(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-            def request(index,method):
+            def request(index,method,path=None):
                 conn=http.client.HTTPSConnection('127.0.0.1',ports[index],context=ssl._create_unverified_context(),timeout=3)
                 try:
-                    conn.request(method,'/mcp' if index else '/file/',body=b'' if method=='POST' else None,headers={'Host':('mcp' if index else 'read')+'.artifact-test.invalid'})
+                    conn.request(method,path or ('/mcp' if index else '/file/'),body=b'' if method=='POST' else None,headers={'Host':('mcp' if index else 'read')+'.artifact-test.invalid'})
                     response=conn.getresponse()
                     return response.status,dict(response.getheaders()),response.read()
                 finally:conn.close()
@@ -52,6 +55,7 @@ def main():
                         if request(0,'GET')[0]==200:break
                     except OSError:time.sleep(.02)
                 else:raise RuntimeError('Disposable nginx did not start')
+                assert request(0,'GET','/cookie-migration/')[0]==200,'Migration response headers exceeded proxy buffer'
                 for index,count,delay in ((0,12,'12'),(1,40,'1')):
                     limited=[]
                     for _ in range(count):
@@ -64,7 +68,7 @@ def main():
                             limited.append(status)
                         else:assert status==200,status
                     assert limited,'Ingress limiter did not trigger'
-                print('Nginx template syntax and read/MCP ingress 429 Retry-After checks passed')
+                print('Nginx template syntax, migration headers and read/MCP ingress 429 Retry-After checks passed')
             finally:
                 process.terminate();process.wait(timeout=10)
     finally:

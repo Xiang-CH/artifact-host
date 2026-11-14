@@ -126,6 +126,8 @@ def create_app(private=False):
             # Keep exact-Origin CSRF validation while suppressing external referrers.
             response.headers['Referrer-Policy'] = 'same-origin'
         response.headers['X-Frame-Options'] = 'DENY'
+        if not private:
+            read_access.migrate_cookies(response, request.cookies, app.config['READABLE_URLS'])
         if not private and 300 <= response.status_code < 400 and request.method in ('GET', 'HEAD') and request.headers.get('Sec-Fetch-Dest') not in (None, '', 'document'):
             # CSP drops source-path checks after redirects. Do not provide a
             # redirect trampoline for browser subresources.
@@ -289,20 +291,27 @@ def create_app(private=False):
 
         @app.post('/api/artifacts/<identifier>/access')
         def set_read_access(identifier):
-            with storage.database() as connection:
-                connection.execute('BEGIN IMMEDIATE')
-                agent = authenticate(connection, credential())
+            secret = credential()
+            def authorize_access_change(connection):
+                agent = authenticate(connection, secret)
                 row = connection.execute('SELECT * FROM artifacts WHERE id=?', (identifier,)).fetchone()
                 if row is None or row['revoked']:
                     abort(404)
                 if not agent['owner'] and row['owner'] != agent['id']:
                     abort(403)
-                if request.content_length is None or request.content_length > 2048:
-                    abort(413)
-                data = request.get_json()
-                if not isinstance(data, dict) or 'password' not in data:
-                    abort(400)
-                hashed, key = read_access.password_fields(data['password'])
+            # Authenticate without holding a writer lock while reading a body
+            # that an authenticated client can send arbitrarily slowly.
+            with storage.database() as connection:
+                authorize_access_change(connection)
+            if request.content_length is None or request.content_length > 2048:
+                abort(413)
+            data = request.get_json()
+            if not isinstance(data, dict) or 'password' not in data:
+                abort(400)
+            hashed, key = read_access.password_fields(data['password'])
+            with storage.database() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                authorize_access_change(connection)
                 connection.execute('UPDATE artifacts SET read_password_hash=?,read_cookie_key=? WHERE id=?', (hashed, key, identifier))
             return {'password_protected': bool(hashed)}
 
@@ -481,7 +490,7 @@ def create_app(private=False):
                 if read_access.check_password(row, password):
                     # Relative, server-derived redirect; never accept a return URL.
                     response = Response(status=303, headers={'Location': request.path})
-                    read_access.unlock_cookie(response, row)
+                    read_access.unlock_cookie(response, row, paths)
                     return response
                 response = read_access.password_page(failed=True)
                 response.password_prompt = True

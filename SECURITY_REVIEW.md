@@ -61,3 +61,10 @@ CSP redirect behavior is specified in the [W3C URL-to-source matching algorithm]
 ## CodeRabbit PR #1 follow-up
 
 The external review identified source-rejected requests consuming the shared authentication allowance, an asynchronous access-dialog save affecting a newer edit, and standalone isolation-test imports selecting the wrong data directory. The review summary also noted missing Retry-After on Nginx-generated 429 responses. Source admission now precedes shared-budget consumption in both password and MCP handlers; dialog generation checks isolate response/error/cleanup effects; test bootstrap selects and verifies its owned temporary root before importing the application. Regression tests preserve sentinel service data even when storage was preloaded. The Nginx template supplies explicit read/MCP retry responses, checked with disposable local TLS listeners. Existing public ingress remains disabled.
+
+
+## CodeRabbit second full review
+
+Four further findings are addressed: access-setting JSON receipt and scrypt hashing now occur before SQLite's writer transaction, with authorization/state/ownership checked before ingestion and again at commit; stale successful editor requests refresh metadata without closing or clearing a newer dialog; remembered cookies are scoped to canonical/legacy artifact paths and old root cookies migrate in bounded batches preserving their expiry; browser input limits no longer disagree with Python Unicode character counting. Additional MCP integration assertions verify the actual supplied read password succeeds and a wrong one fails.
+
+New regression evidence includes real slow HTTP body receipt concurrent with successful token revocation, ownership changes before commit, 40 remembered files remaining below the request-header limit, 25 root-cookie migrations preserving expiry across batches, and a 128-code-point password ending in an emoji working through both dashboard and auth wall. The static template's source remains a constant; the unrelated static-template lint warning is not an untrusted template-injection path.

@@ -149,7 +149,6 @@ element('read-access-form').addEventListener('submit', async event => {
   const fileId = accessFile.id;
   try {
     await api('POST','/api/artifacts/'+encodeURIComponent(fileId)+'/access', {password:element('read-private').checked ? element('read-password').value : ''});
-    if (generation !== accessGeneration) return;
     await load();
     if (generation === accessGeneration) closeReadAccess();
   } catch (error) {

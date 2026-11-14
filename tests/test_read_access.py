@@ -73,7 +73,7 @@ class ReadAccess(unittest.TestCase):
         self.assertEqual(self.public.get(path + 'secret.txt').status_code, 401)
         self.assertEqual(self.unlock(path).status_code, 303)
         name = 'artifact_read_' + item['id']
-        self.public.set_cookie(name, '999999999999.forged', domain='127.0.0.1')
+        self.public.set_cookie(name, '999999999999.forged', domain='127.0.0.1', path='/s/'+item['id']+'/')
         self.assertEqual(self.public.get(path).status_code, 401)
         self.assertEqual(self.unlock(path).status_code, 303)
         self.assertEqual(self.public.get(path + 'secret.txt').data, b'PRIVATE CONTENT')
@@ -105,3 +105,26 @@ class ReadAccess(unittest.TestCase):
             with patch('artifact_host.app.client_address',return_value='192.0.2.2'):
                 self.assertEqual(self.unlock(path,'wrong').status_code,401)
             self.assertEqual(verify.call_count,6)
+
+    def test_astral_unicode_password_accepted_at_server_limit(self):
+        password='a'*127+'😀'
+        item=self.upload('unicode.txt',b'unicode content').json
+        self.assertEqual(self.change(item,password).status_code,200)
+        path='/s/'+item['id']+'/'+item['slug']+'/'
+        response=self.public.get(path)
+        self.assertNotIn(b'maxlength=',response.data)
+        self.assertEqual(self.unlock(path,password).status_code,303)
+        self.assertEqual(self.public.get(path).data,b'unicode content')
+
+    def test_access_change_rechecks_ownership_after_reading_body(self):
+        item=self.upload('ownership.txt',b'content').json
+        from artifact_host import read_access
+        original=read_access.password_fields
+        def change_owner(password):
+            with storage.database() as connection:
+                connection.execute('UPDATE artifacts SET owner=? WHERE id=?',(self.other_id,item['id']))
+            return original(password)
+        with patch('artifact_host.app.read_access.password_fields',side_effect=change_owner):
+            self.assertEqual(self.change(item,'ownership-password').status_code,403)
+        with storage.database() as connection:
+            self.assertIsNone(connection.execute('SELECT read_password_hash FROM artifacts WHERE id=?',(item['id'],)).fetchone()[0])

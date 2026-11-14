@@ -91,11 +91,11 @@ def main():
         browser('wait','--fn','document.querySelector("img")?.naturalWidth===1')
         result['protected_legacy_assets']=True
         html_access=EndToEnd.api+'/api/artifacts/'+artifact['id']+'/access'
-        with urlopen(Request(html_access,data=json.dumps({'password':'html-test-password'}).encode(),headers={'Authorization':'Bearer '+EndToEnd.owner,'Content-Type':'application/json'},method='POST')) as response:
+        with urlopen(Request(html_access,data=json.dumps({'password':'a'*127+'😀'}).encode(),headers={'Authorization':'Bearer '+EndToEnd.owner,'Content-Type':'application/json'},method='POST')) as response:
             assert response.status==200
         browser('open',artifact['url'])
         browser('wait','--fn','!!document.getElementById("password")')
-        browser('fill','#password','html-test-password')
+        browser('fill','#password','a'*127+'😀')
         browser('click','form button')
         browser('wait','--fn','window.checks?.externalScript && document.querySelector("#asset").naturalWidth===1')
         browser('click','#interactive')
@@ -108,28 +108,36 @@ def main():
         # Release a stale save after the user has opened a different editor.
         race_check = evaluate("""(async()=>{
           const originalFetch=window.fetch;
-          let release;
+          const originalLoad=load;
+          let release, resolveRefresh;
+          let refreshCount=0;
+          load=async()=>{await originalLoad();refreshCount++;resolveRefresh?.();};
           window.fetch=(url,options)=>String(url).endsWith('/access') && options?.method==='POST'
-            ? new Promise(resolve=>{release=code=>resolve(new Response(JSON.stringify(code===200?{}:{error:'old save failed'}),{status:code,headers:{'Content-Type':'application/json'}}));})
+            ? new Promise((resolve,reject)=>{release=code=>code===200?originalFetch(url,options).then(resolve,reject):resolve(new Response(JSON.stringify({error:'old save failed'}),{status:code,headers:{'Content-Type':'application/json'}}));})
             : originalFetch(url,options);
           try {
             for (const status of [200,400]) {
               openReadAccess(files[0]);
-              element('read-private').checked=true;updateReadInput();element('read-password').value='first-edit-password';
+              element('read-private').checked=false;updateReadInput();
+              const before=refreshCount;
+              const refreshed=new Promise(resolve=>{resolveRefresh=resolve;});
               element('read-access-form').requestSubmit(element('access-save'));
               element('access-cancel').click();
               openReadAccess(files[1]);
               element('read-private').checked=true;updateReadInput();element('read-password').value='second-edit-password';
               release(status);
-              await new Promise(resolve=>setTimeout(resolve,0));
+              if (status===200) await refreshed; else await new Promise(resolve=>setTimeout(resolve,0));
+              if (status===200 && (refreshCount!==before+1 || files[0].password_protected!==false)) return false;
+              if (status===400 && refreshCount!==before) return false;
               if (!element('read-access').open || accessFile.id!==files[1].id || element('read-password').value!=='second-edit-password' || element('access-error').textContent!=='' || element('access-save').disabled) return false;
               closeReadAccess();
             }
             return true;
-          } finally {window.fetch=originalFetch;closeReadAccess();}
+          } finally {window.fetch=originalFetch;load=originalLoad;closeReadAccess();}
         })()""")
         assert race_check
         result['stale_access_save_does_not_mutate_new_editor']=True
+        result['canceled_save_refreshes_access_metadata']=True
         browser('eval', 'document.querySelector("#token-details summary").scrollIntoView({block:"center"})')
         browser('click','#token-details summary')
         browser('wait','--fn','document.getElementById("token-details").open')
@@ -146,6 +154,22 @@ def main():
         browser('eval', 'document.querySelector("#token-details summary").scrollIntoView({block:"center"})')
         browser('click','#token-details summary')
         browser('wait','--fn','document.getElementById("token-details").open')
+        browser('click','#artifacts .file-row:last-child .row-actions button:first-of-type')
+        browser('wait','--fn','document.getElementById("read-access").open')
+        browser('check','#read-private')
+        browser('fill','#read-password','a'*127+'😀')
+        browser('click','#read-access-form button.primary')
+        browser('wait','--fn','!document.getElementById("read-access").open')
+        browser('open',markdown['url'])
+        browser('wait','--fn','!!document.getElementById("password")')
+        browser('fill','#password','a'*127+'😀')
+        browser('click','form button')
+        browser('wait','--fn','document.querySelector("img")?.naturalWidth===1')
+        result['unicode_password_dashboard_and_unlock']=True
+        browser('open',EndToEnd.api)
+        browser('wait','--fn','document.querySelectorAll("#artifacts p").length===2')
+        browser('eval', 'document.querySelector("#token-details summary").scrollIntoView({block:"center"})')
+        browser('click','#token-details summary')
         browser('click','#artifacts .file-row:last-child .row-actions button:first-of-type')
         browser('wait','--fn','document.getElementById("read-access").open')
         browser('uncheck','#read-private')

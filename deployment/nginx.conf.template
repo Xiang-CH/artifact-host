@@ -27,6 +27,10 @@ server {
     }
     location / {
         limit_req zone=artifact_unlock burst=5 nodelay;
+        # Bounded migration of old remembered cookies may emit several Set-Cookie fields.
+        proxy_buffer_size 32k;
+        proxy_buffers 4 32k;
+        proxy_busy_buffers_size 64k;
         proxy_pass http://127.0.0.1:8792;
         proxy_set_header Host @READ_HOST@;
         proxy_set_header X-Real-IP $remote_addr;

@@ -94,6 +94,10 @@ class RemoteMCP(unittest.TestCase):
         artifact=asyncio.run(self.session_flow(first['token'],create))
         self.assertEqual(artifact['short_slug'],'remote-mcp-owner-check')
         self.assertEqual(self.request('GET','/'+artifact['short_slug']+'/',base=self.public)[0],401)
+        with httpx.Client(trust_env=False,follow_redirects=False) as client:
+            target=self.public+'/'+artifact['short_slug']+'/'
+            self.assertEqual(client.post(target,data={'password':'wrong-test-password'},headers={'Origin':self.public}).status_code,401)
+            self.assertEqual(client.post(target,data={'password':'remote-test-password'},headers={'Origin':self.public}).status_code,303)
         async def intruder(session):
             listing=await session.call_tool('list_artifacts',{})
             self.assertNotIn(artifact['id'],''.join(c.text for c in listing.content))
