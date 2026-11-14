@@ -1,0 +1,6 @@
+# Include in http {}, once. Then include nginx-paths-locations inside the existing portal server.
+limit_req_zone $binary_remote_addr zone=artifact_mcp_ip:1m rate=60r/m;
+limit_req_zone $server_name zone=artifact_mcp_total:1m rate=300r/m;
+map $request_method $artifact_unlock_key { default ""; POST $binary_remote_addr; }
+limit_req_zone $artifact_unlock_key zone=artifact_unlock:1m rate=5r/m;
+

@@ -17,15 +17,15 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def main():
+def main(paths=False):
     nginx=shutil.which('nginx')
     if not nginx:raise RuntimeError('nginx is required for this separate integration check')
     class Upstream(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
-            if self.path=='/cookie-migration/':
+            if self.path.endswith('/cookie-migration/'):
                 for index in range(60):self.send_header('Set-Cookie','fixture_'+str(index)+'='+('x'*180)+'; Path=/fixture/; Secure; HttpOnly')
-            self.end_headers();self.wfile.write(b'upstream')
+            self.end_headers();self.wfile.write(b'upstream:'+self.path.encode())
         do_POST=do_GET
         def log_message(self,*args):pass
     upstream=ThreadingHTTPServer(('127.0.0.1',0),Upstream)
@@ -37,15 +37,22 @@ def main():
             config=(Path(__file__).resolve().parents[1]/'deployment/nginx.conf.template').read_text()
             for key,value in {'@READ_HOST@':'read.artifact-test.invalid','@MCP_HOST@':'mcp.artifact-test.invalid','@CERTIFICATE@':str(root/'cert'),'@CERTIFICATE_KEY@':str(root/'key')}.items():config=config.replace(key,value)
             for port in ports:config=config.replace('listen 443 ssl;',f'listen 127.0.0.1:{port} ssl;',1)
+            if paths:
+                templates=Path(__file__).resolve().parents[1]/'deployment'
+                config=(templates/'nginx-paths-http.conf.template').read_text()
+                locations=(templates/'nginx-paths-locations.conf.template').read_text().replace('@HOST@','portal.artifact-test.invalid')
+                config+='server { '+''.join(f'listen 127.0.0.1:{port} ssl; ' for port in ports)+'server_name portal.artifact-test.invalid; ssl_certificate '+str(root/'cert')+'; ssl_certificate_key '+str(root/'key')+'; '+locations+' location = / { return 200 "portal"; } }'
             for port in (8792,8793):config=config.replace(f'http://127.0.0.1:{port}',f'http://127.0.0.1:{upstream.server_port}')
-            (root/'nginx.conf').write_text('daemon off; pid '+str(root/'pid')+'; error_log stderr; events {} http { client_body_temp_path '+str(root/'body')+'; proxy_temp_path '+str(root/'proxy')+'; '+config+' }')
+            (root/'nginx.conf').write_text('daemon off; pid '+str(root/'pid')+'; error_log stderr; events {} http { access_log off; client_body_temp_path '+str(root/'body')+'; proxy_temp_path '+str(root/'proxy')+'; '+config+' }')
             command=[nginx,'-p',str(root),'-c',str(root/'nginx.conf')]
-            subprocess.run(command+['-t'],check=True,capture_output=True)
+            syntax = subprocess.run(command+['-t'],capture_output=True,text=True)
+            if syntax.returncode:
+                raise RuntimeError(syntax.stderr)
             process=subprocess.Popen(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             def request(index,method,path=None):
                 conn=http.client.HTTPSConnection('127.0.0.1',ports[index],context=ssl._create_unverified_context(),timeout=3)
                 try:
-                    conn.request(method,path or ('/mcp' if index else '/file/'),body=b'' if method=='POST' else None,headers={'Host':('mcp' if index else 'read')+'.artifact-test.invalid'})
+                    conn.request(method,path or ('/mcp' if index else ('/a/file/' if paths else '/file/')),body=b'' if method=='POST' else None,headers={'Host':('portal' if paths else ('mcp' if index else 'read'))+'.artifact-test.invalid'})
                     response=conn.getresponse()
                     return response.status,dict(response.getheaders()),response.read()
                 finally:conn.close()
@@ -55,7 +62,12 @@ def main():
                         if request(0,'GET')[0]==200:break
                     except OSError:time.sleep(.02)
                 else:raise RuntimeError('Disposable nginx did not start')
-                assert request(0,'GET','/cookie-migration/')[0]==200,'Migration response headers exceeded proxy buffer'
+                assert request(0,'GET',('/a' if paths else '')+'/cookie-migration/')[0]==200,'Migration response headers exceeded proxy buffer'
+                if paths:
+                    assert request(0,'GET','/')[2]==b'portal'
+                    assert request(0,'GET')[2]==b'upstream:/a/file/'
+                    assert request(1,'GET')[2]==b'upstream:/mcp'
+                    assert request(0,'GET','/a')[0]==308
                 for index,count,delay in ((0,12,'12'),(1,40,'1')):
                     limited=[]
                     for _ in range(count):
@@ -75,4 +87,6 @@ def main():
         upstream.shutdown();upstream.server_close()
 
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    main()
+    main(paths=True)

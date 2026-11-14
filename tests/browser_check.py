@@ -90,7 +90,7 @@ def main():
         finally:
             external.shutdown();external.server_close()
         # The legacy URL remains functional after unlocking through its alias.
-        legacy=EndToEnd.public+'/s/'+markdown['id']+'/'+markdown['slug']+'/'
+        legacy=EndToEnd.public_base+'/s/'+markdown['id']+'/'+markdown['slug']+'/'
         browser('open',legacy)
         browser('wait','--fn','document.querySelector("img")?.naturalWidth===1')
         result['protected_legacy_assets']=True

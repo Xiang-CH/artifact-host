@@ -22,7 +22,7 @@ class TestDataSafety(unittest.TestCase):
                 return {str(p.relative_to(root)):p.read_bytes() for p in root.rglob('*') if p.is_file()}
             before=snapshot()
             env=dict(os.environ,ARTIFACT_DATA=str(root))
-            for name in ('PUBLIC_URL','PRIVATE_ORIGIN','PRIVATE_HOSTS','READABLE_URLS'):
+            for name in ('PUBLIC_URL','PRIVATE_ORIGIN','PRIVATE_HOSTS','READABLE_URLS','PUBLIC_PATH'):
                 env.pop(name,None)
             if preload:
                 command=[sys.executable,'-c',"import sys;sys.path.insert(0,'tests');import artifact_host.storage;import test_isolation"]

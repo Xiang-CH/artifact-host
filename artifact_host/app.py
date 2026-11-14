@@ -16,6 +16,8 @@ from html import escape
 
 from flask import Flask, Response, abort, current_app, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
+from werkzeug.middleware.dispatcher import DispatcherMiddleware
+from werkzeug.exceptions import NotFound
 
 from artifact_host import storage
 from artifact_host.rendering import CACHE_DIR, render_bundle
@@ -26,6 +28,10 @@ from artifact_host.isolation import DENY_CSP, content_policy, remembered_read_co
 ROOT = storage.ROOT
 PUBLIC = os.environ.get('PUBLIC_URL', 'http://127.0.0.1:8792').rstrip('/')
 PUBLIC_PARTS = urlsplit(PUBLIC)
+PUBLIC_PATH = os.environ.get('PUBLIC_PATH', '')
+if PUBLIC_PATH and not re.fullmatch(r'(?:/[A-Za-z0-9_-]+)+', PUBLIC_PATH):
+    raise RuntimeError('PUBLIC_PATH must be empty or a path without a trailing slash')
+PUBLIC_BASE = PUBLIC + PUBLIC_PATH
 if PUBLIC_PARTS.scheme not in ('http', 'https') or not PUBLIC_PARTS.hostname or PUBLIC_PARTS.username or PUBLIC_PARTS.password or PUBLIC_PARTS.path or PUBLIC_PARTS.query or PUBLIC_PARTS.fragment:
     raise RuntimeError('PUBLIC_URL must be a dedicated HTTP(S) origin')
 # The service ships loopback-only; production read hosts must use HTTPS.
@@ -43,8 +49,8 @@ def token(owner=False):
 
 def share_url(row):
     if current_app.config['READABLE_URLS'] and 'short_slug' in row.keys() and row['short_slug']:
-        return PUBLIC + '/' + row['short_slug'] + '/'
-    return PUBLIC + '/s/' + row['id'] + '/' + (row['slug'] + '/' if row['slug'] else '')
+        return PUBLIC_BASE + '/' + row['short_slug'] + '/'
+    return PUBLIC_BASE + '/s/' + row['id'] + '/' + (row['slug'] + '/' if row['slug'] else '')
 
 def credential():
     header = request.headers.get('Authorization', '')
@@ -127,7 +133,7 @@ def create_app(private=False):
             response.headers['Referrer-Policy'] = 'same-origin'
         response.headers['X-Frame-Options'] = 'DENY'
         if not private:
-            read_access.migrate_cookies(response, request.cookies, app.config['READABLE_URLS'])
+            read_access.migrate_cookies(response, request.cookies, app.config['READABLE_URLS'], request.script_root)
         if not private and 300 <= response.status_code < 400 and request.method in ('GET', 'HEAD') and request.headers.get('Sec-Fetch-Dest') not in (None, '', 'document'):
             # CSP drops source-path checks after redirects. Do not provide a
             # redirect trampoline for browser subresources.
@@ -287,7 +293,7 @@ def create_app(private=False):
                 slug = bind_alias(connection, identifier, request.args.get('slug', ''))
                 if storage.disk_usage() > storage.BUDGET:
                     raise storage.QuotaExceeded()
-            return {'id': identifier, 'short_slug': slug, 'url': PUBLIC + '/' + slug + '/'}
+            return {'id': identifier, 'short_slug': slug, 'url': PUBLIC_BASE + '/' + slug + '/'}
 
         @app.post('/api/artifacts/<identifier>/access')
         def set_read_access(identifier):
@@ -388,7 +394,7 @@ def create_app(private=False):
                     except BaseException:
                         shutil.rmtree(ROOT / identifier)
                         raise
-                url = PUBLIC + '/' + short_slug + '/' if short_slug else PUBLIC + '/s/' + identifier + '/' + slug + '/'
+                url = PUBLIC_BASE + '/' + short_slug + '/' if short_slug else PUBLIC_BASE + '/s/' + identifier + '/' + slug + '/'
                 return {'id': identifier, 'slug': slug, 'short_slug': short_slug, 'url': url}, 201
             finally:
                 # Do not remove another uploader's staging after failed flock.
@@ -465,8 +471,8 @@ def create_app(private=False):
                 abort(404)
             with storage.database() as connection:
                 alias = connection.execute('SELECT slug FROM aliases WHERE artifact_id=?', (row['id'],)).fetchone()
-            paths = resource_paths(row, alias['slug'] if alias and app.config['READABLE_URLS'] else None)
-            resource_prefix = '/_r/' + row['id'] + '/' + (grant or read_access.resource_grant(row)) + '/' if row['read_password_hash'] else None
+            paths = resource_paths(row, alias['slug'] if alias and app.config['READABLE_URLS'] else None, request.script_root)
+            resource_prefix = request.script_root + '/_r/' + row['id'] + '/' + (grant or read_access.resource_grant(row)) + '/' if row['read_password_hash'] else None
             policy = content_policy(PUBLIC, [resource_prefix] if resource_prefix else paths, resource_base=bool(resource_prefix))
             if request.method == 'POST':
                 if not row['read_password_hash']:
@@ -489,7 +495,7 @@ def create_app(private=False):
                     abort(400)
                 if read_access.check_password(row, password):
                     # Relative, server-derived redirect; never accept a return URL.
-                    response = Response(status=303, headers={'Location': request.path})
+                    response = Response(status=303, headers={'Location': request.script_root + request.path})
                     read_access.unlock_cookie(response, row, paths)
                     return response
                 response = read_access.password_page(failed=True)
@@ -550,6 +556,10 @@ def create_app(private=False):
                 return response
             except (OSError, storage.InvalidUpload):
                 abort(404)
+    if not private and PUBLIC_PATH:
+        # A fixed mount, never derived from untrusted forwarding headers. Keep
+        # SCRIPT_NAME so redirects, cookie paths and CSP use the external path.
+        app.wsgi_app = DispatcherMiddleware(NotFound(), {PUBLIC_PATH: app.wsgi_app})
     return app
 
 private_app = create_app(True)

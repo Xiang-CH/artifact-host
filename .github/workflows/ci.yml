@@ -91,6 +91,11 @@ jobs:
           rm -f docs/security-browser-check.json
           python tests/browser_check.py 2>&1 | tee test-results/browser.log
           cp docs/security-browser-check.json test-results/browser-evidence.json
+      - name: Run the complete browser flow under the public /a mount
+        run: |
+          rm -f docs/security-browser-check.json
+          PUBLIC_PATH=/a python tests/browser_check.py 2>&1 | tee test-results/browser-paths.log
+          cp docs/security-browser-check.json test-results/browser-paths-evidence.json
       - name: Upload browser output and fresh evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

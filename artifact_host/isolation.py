@@ -5,12 +5,12 @@ from urllib.parse import quote
 DENY_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 
-def resource_paths(row, alias=None):
+def resource_paths(row, alias=None, prefix=''):
     # Both URL forms stay within the same owning artifact.
     paths = ['/s/' + row['id'] + '/']
     if alias:
         paths.append('/' + alias + '/')
-    return paths
+    return [prefix + path for path in paths]
 
 
 def content_policy(origin, paths, resource_base=False):
