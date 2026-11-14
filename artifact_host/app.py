@@ -9,14 +9,17 @@ import shutil
 import sqlite3
 import time
 import zipfile
+import base64
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
 from flask import Flask, Response, abort, current_app, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
 
 from artifact_host import storage
 from artifact_host.rendering import CACHE_DIR, render_bundle
+from artifact_host import read_access
+from artifact_host.rate_limit import RateLimit, client_address
 
 ROOT = storage.ROOT
 PUBLIC = os.environ.get('PUBLIC_URL', 'http://127.0.0.1:8792').rstrip('/')
@@ -84,10 +87,12 @@ def create_app(private=False):
     app.config.update(MAX_CONTENT_LENGTH=storage.LIMIT, PRIVATE_ORIGIN=private_origin,
                       READABLE_URLS=os.environ.get('READABLE_URLS') == '1',
                       TRUSTED_HOSTS=private_hosts if private else [PUBLIC_PARTS.hostname])
+    password_attempts = RateLimit(5, 1 / 12)
+    password_total = RateLimit(20, 1)
 
     @app.before_request
     def boundary():
-        if not private and request.method not in ('GET', 'HEAD'):
+        if not private and request.method not in ('GET', 'HEAD') and not (request.method == 'POST' and request.endpoint in ('serve', 'serve_alias')):
             abort(404)
         if private:
             try:
@@ -111,6 +116,11 @@ def create_app(private=False):
         response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=(), payment=()'
         response.headers['Content-Security-Policy'] = (
             "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" if private else ARTIFACT_CSP)
+        if getattr(response, 'password_prompt', False):
+            response.headers['Content-Security-Policy'] = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+            # no-referrer makes HTML form navigation serialize Origin as null.
+            # Keep exact-Origin CSRF validation while suppressing external referrers.
+            response.headers['Referrer-Policy'] = 'same-origin'
         response.headers['X-Frame-Options'] = 'DENY'
         return response
 
@@ -204,7 +214,7 @@ def create_app(private=False):
                 if conditions:
                     query += ' WHERE ' + ' AND '.join(conditions)
                 rows = connection.execute(query + ' ORDER BY artifacts.rowid LIMIT 100 OFFSET ?', params + (offset,)).fetchall()
-                return jsonify([dict(row, url=share_url(row)) for row in rows])
+                return jsonify([dict({key: row[key] for key in row.keys() if key not in ('read_password_hash', 'read_cookie_key')}, password_protected=bool(row['read_password_hash']), url=share_url(row)) for row in rows])
 
         @app.route('/api/tokens', methods=['GET', 'POST'])
         def tokens():
@@ -267,11 +277,38 @@ def create_app(private=False):
                     raise storage.QuotaExceeded()
             return {'id': identifier, 'short_slug': slug, 'url': PUBLIC + '/' + slug + '/'}
 
+        @app.post('/api/artifacts/<identifier>/access')
+        def set_read_access(identifier):
+            with storage.database() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                agent = authenticate(connection, credential())
+                row = connection.execute('SELECT * FROM artifacts WHERE id=?', (identifier,)).fetchone()
+                if row is None or row['revoked']:
+                    abort(404)
+                if not agent['owner'] and row['owner'] != agent['id']:
+                    abort(403)
+                if request.content_length is None or request.content_length > 2048:
+                    abort(413)
+                data = request.get_json()
+                if not isinstance(data, dict) or 'password' not in data:
+                    abort(400)
+                hashed, key = read_access.password_fields(data['password'])
+                connection.execute('UPDATE artifacts SET read_password_hash=?,read_cookie_key=? WHERE id=?', (hashed, key, identifier))
+            return {'password_protected': bool(hashed)}
+
         @app.post('/api/artifacts')
         def upload():
             secret = credential()
             with storage.database() as connection:
                 authenticate(connection, secret)
+            try:
+                encoded_password = request.headers.get('X-Artifact-Read-Password', '')
+                if len(encoded_password) > 1024:
+                    abort(400)
+                password = base64.b64decode(encoded_password, validate=True).decode('utf-8')
+            except (ValueError, UnicodeError):
+                abort(400)
+            password_hash, cookie_key = read_access.password_fields(password)
             expiry = storage.expiry_value(request.args.get('expires'))
             slug = storage.make_slug(request.args.get('slug') or Path(request.args.get('name', 'artifact')).stem)
             identifier = secrets.token_urlsafe(32)
@@ -322,8 +359,8 @@ def create_app(private=False):
                     content.rename(ROOT / identifier)
                     short_slug = None
                     try:
-                        connection.execute('INSERT INTO artifacts(id,owner,entry,size,expires,slug) VALUES(?,?,?,?,?,?)',
-                            (identifier, agent['id'], entry, size, expiry, slug))
+                        connection.execute('INSERT INTO artifacts(id,owner,entry,size,expires,slug,read_password_hash,read_cookie_key) VALUES(?,?,?,?,?,?,?,?)',
+                            (identifier, agent['id'], entry, size, expiry, slug, password_hash, cookie_key))
                         if app.config['READABLE_URLS']:
                             title = request.args.get('slug') or Path(request.args.get('name', 'artifact')).stem
                             short_slug = bind_alias(connection, identifier, title, exact=bool(request.args.get('slug')))
@@ -366,8 +403,8 @@ def create_app(private=False):
                 connection.execute('UPDATE artifacts SET size=0 WHERE id=?', (identifier,))
             return '', 204
     else:
-        @app.get('/s/<identifier>/', defaults={'name': None})
-        @app.get('/s/<identifier>/<path:name>')
+        @app.route('/s/<identifier>/', defaults={'name': None}, methods=['GET', 'POST'])
+        @app.route('/s/<identifier>/<path:name>', methods=['GET', 'POST'])
         def serve(identifier, name):
             if not storage.ID_PATTERN.fullmatch(identifier):
                 abort(404)
@@ -382,8 +419,8 @@ def create_app(private=False):
                     abort(404)
             return serve_file(row, name)
 
-        @app.get('/<short_slug>/', defaults={'name': None})
-        @app.get('/<short_slug>/<path:name>')
+        @app.route('/<short_slug>/', defaults={'name': None}, methods=['GET', 'POST'])
+        @app.route('/<short_slug>/<path:name>', methods=['GET', 'POST'])
         def serve_alias(short_slug, name):
             if not app.config['READABLE_URLS']:
                 abort(404)
@@ -394,6 +431,35 @@ def create_app(private=False):
         def serve_file(row, name):
             if row is None or row['revoked'] or (row['expires'] is not None and row['expires'] <= time.time()):
                 abort(404)
+            if request.method == 'POST':
+                if not row['read_password_hash']:
+                    abort(405)
+                if request.headers.get('Origin') != PUBLIC:
+                    abort(403)
+                source = client_address(request.remote_addr, request.headers, os.environ.get('ARTIFACT_TRUST_PROXY_IP') == '1')
+                retry = max(password_total.check('all'), password_attempts.check(source))
+                if retry:
+                    return Response('Too many attempts. Try again later.', status=429, headers={'Retry-After': str(retry)})
+                raw = request.stream.read(2049)
+                if len(raw) > 2048:
+                    abort(413)
+                try:
+                    values = parse_qs(raw.decode('utf-8'), max_num_fields=2)
+                    password = values.get('password', [''])[0]
+                except (ValueError, UnicodeError):
+                    abort(400)
+                if read_access.check_password(row, password):
+                    # Relative, server-derived redirect; never accept a return URL.
+                    response = Response(status=303, headers={'Location': request.path})
+                    read_access.unlock_cookie(response, row)
+                    return response
+                response = read_access.password_page(failed=True)
+                response.password_prompt = True
+                return response
+            if not read_access.unlocked(row, request.cookies):
+                response = read_access.password_page()
+                response.password_prompt = True
+                return response
             identifier = row['id']
             name = name or row['entry']
             try:

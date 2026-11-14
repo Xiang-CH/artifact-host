@@ -1,5 +1,6 @@
 """Authenticated HTTP client for CLI and MCP. Never follow redirects with secrets."""
 import io
+import base64
 from contextvars import ContextVar
 import json
 import os
@@ -28,7 +29,7 @@ def endpoint_url(endpoint):
         raise ClientError('API must be an HTTPS origin or loopback HTTP origin')
     return endpoint.rstrip('/')
 
-def api(method, path, data=None, endpoint=None):
+def api(method, path, data=None, endpoint=None, extra_headers=None):
     endpoint = endpoint_url(endpoint or os.environ.get('ARTIFACT_API', 'http://127.0.0.1:8791'))
     secret = REQUEST_TOKEN.get()
     if secret is None:
@@ -36,7 +37,7 @@ def api(method, path, data=None, endpoint=None):
     if not secret or any(c.isspace() for c in secret):
         raise ClientError('ARTIFACT_TOKEN is required')
     request = urllib.request.Request(endpoint + path, data=data, method=method,
-        headers={'Authorization': 'Bearer ' + secret, 'Content-Type': 'application/octet-stream'})
+        headers={'Authorization': 'Bearer ' + secret, 'Content-Type': 'application/octet-stream', **(extra_headers or {})})
     # Explicitly disable ambient proxies, which could otherwise see loopback credentials.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
@@ -50,7 +51,7 @@ def api(method, path, data=None, endpoint=None):
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         raise ClientError('Artifact API request failed') from None
 
-def upload(name, content, slug='', bundle=False, expires=None, endpoint=None):
+def upload(name, content, slug='', bundle=False, expires=None, endpoint=None, read_password=''):
     if len(content) > MAX_UPLOAD:
         raise ClientError('Upload exceeds client limit')
     query = {'name': name, 'slug': slug}
@@ -58,7 +59,8 @@ def upload(name, content, slug='', bundle=False, expires=None, endpoint=None):
         query['bundle'] = '1'
     if expires is not None:
         query['expires'] = str(expires)
-    return api('POST', '/api/artifacts?' + urllib.parse.urlencode(query), content, endpoint)
+    headers = {'X-Artifact-Read-Password': base64.b64encode(read_password.encode()).decode()} if read_password else None
+    return api('POST', '/api/artifacts?' + urllib.parse.urlencode(query), content, endpoint, extra_headers=headers)
 
 def read_upload(path):
     path = Path(path)

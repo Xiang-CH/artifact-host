@@ -14,8 +14,10 @@
     "image": 1,
     "xss": false
   },
+  "password_remembered_with_sandboxed_assets": true,
   "token_created_once": true,
   "dashboard_no_raw_token_storage": true,
+  "dashboard_access_dialog": true,
   "token_revoked": true,
   "artifact_revoked": true,
   "forgotten": true

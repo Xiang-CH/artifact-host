@@ -26,7 +26,7 @@ class RemoteMCP(unittest.TestCase):
         cls.remote_port=test_e2e.free_port()
         cls.origin=f'http://127.0.0.1:{cls.remote_port}'
         cls.remote_url=cls.origin+'/mcp'
-        env=dict(cls.env,MCP_PORT=str(cls.remote_port),MCP_ORIGIN=cls.origin,ARTIFACT_API=cls.api,MCP_BODY_LIMIT='8192',ARTIFACT_TOKEN=cls.owner)
+        env=dict(cls.env,MCP_PORT=str(cls.remote_port),MCP_ORIGIN=cls.origin,ARTIFACT_API=cls.api,MCP_BODY_LIMIT='8192',MCP_AUTH_BURST='300',ARTIFACT_TOKEN=cls.owner)
         cls.processes.append(subprocess.Popen([sys.executable,'-m','artifact_host.remote_mcp'],cwd=test_e2e.REPO,env=env,stdout=cls.log,stderr=cls.log))
         for _ in range(100):
             try:
@@ -88,11 +88,12 @@ class RemoteMCP(unittest.TestCase):
             self.assertEqual({t.name for t in tools.tools},{'upload_artifact','list_artifacts','revoke_artifact'})
             upload_tool=next(tool for tool in tools.tools if tool.name=='upload_artifact')
             self.assertIn('slug',upload_tool.inputSchema['properties'])
-            result=await session.call_tool('upload_artifact',{'name':'report.md','slug':'remote-mcp-owner-check','content':'# Remote MCP'})
+            result=await session.call_tool('upload_artifact',{'name':'report.md','slug':'remote-mcp-owner-check','content':'# Remote MCP','read_password':'remote-test-password'})
             self.assertFalse(result.isError)
             return json.loads(result.content[0].text)
         artifact=asyncio.run(self.session_flow(first['token'],create))
         self.assertEqual(artifact['short_slug'],'remote-mcp-owner-check')
+        self.assertEqual(self.request('GET','/'+artifact['short_slug']+'/',base=self.public)[0],401)
         async def intruder(session):
             listing=await session.call_tool('list_artifacts',{})
             self.assertNotIn(artifact['id'],''.join(c.text for c in listing.content))

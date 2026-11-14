@@ -44,6 +44,19 @@ def main():
         browser('wait','--fn','document.documentElement.dataset.theme==="dark"')
         result['markdown_theme_persisted']=True
         result['markdown']=evaluate('({heading:document.querySelector("h1").textContent,image:document.querySelector("img").naturalWidth,xss:!!window.xss})')
+        # Existing upload becomes password-protected, including relative assets.
+        from urllib.request import Request, urlopen
+        access_path = EndToEnd.api + '/api/artifacts/' + markdown['id'] + '/access'
+        with urlopen(Request(access_path, data=json.dumps({'password':'browser-test-password'}).encode(), headers={'Authorization':'Bearer '+EndToEnd.owner,'Content-Type':'application/json'}, method='POST')) as response:
+            assert response.status == 200
+        browser('open',markdown['url'])
+        browser('wait','--fn','!!document.querySelector("#password")')
+        browser('fill','#password','browser-test-password')
+        browser('click','form button')
+        browser('wait','--fn','document.querySelector("img")?.naturalWidth === 1')
+        browser('reload')
+        browser('wait','--fn','document.querySelector("img")?.naturalWidth === 1')
+        result['password_remembered_with_sandboxed_assets']=True
         browser('open',EndToEnd.api)
         browser('fill','#key',EndToEnd.owner)
         browser('click','#load')
@@ -64,11 +77,17 @@ def main():
         browser('eval', 'document.querySelector("#token-details summary").scrollIntoView({block:"center"})')
         browser('click','#token-details summary')
         browser('wait','--fn','document.getElementById("token-details").open')
+        browser('click','#artifacts .file-row:last-child .row-actions button:first-of-type')
+        browser('wait','--fn','document.getElementById("read-access").open')
+        browser('uncheck','#read-private')
+        browser('click','#read-access-form button.primary')
+        browser('wait','--fn','!document.getElementById("read-access").open')
+        result['dashboard_access_dialog']=True
         browser('click','#tokens button')
         browser('dialog','accept')
         browser('wait','--fn','document.querySelectorAll("#tokens p").length === 1')
         result['token_revoked']=True
-        browser('click','#artifacts button')
+        browser('click','#artifacts .file-row:first-child button:last-child')
         browser('dialog','accept')
         browser('click','#archive-nav')
         browser('wait','--fn','document.querySelector("#artifacts").textContent.includes("已撤销")')

@@ -8,15 +8,16 @@ mcp = FastMCP('Artifact host')
 
 @mcp.tool()
 def upload_artifact(name: str, content: str, slug: str = '', base64_encoded: bool = False,
-                    bundle: bool = False, expires: float | None = None) -> dict:
+                    bundle: bool = False, expires: float | None = None, read_password: str = '') -> dict:
     """Upload text or base64 binary/ZIP. Bundle ZIPs need index.html or README.md.
 
     Slug selects a readable URL when enabled on the server. Exact names conflict with HTTP 409 if already taken. Links can be forwarded.
     Expiry is an optional Unix timestamp. No local filesystem access is exposed.
+    Files are public by default. Optional read_password (8–128 characters) requires browser password entry, remembered for 30 days.
     """
     if len(content) > 70*1024*1024: raise ValueError('Content exceeds bridge limit')
     data = base64.b64decode(content, validate=True) if base64_encoded else content.encode()
-    return upload(name, data, slug, bundle, expires)
+    return upload(name, data, slug, bundle, expires, read_password=read_password)
 
 @mcp.tool()
 def list_artifacts() -> list:

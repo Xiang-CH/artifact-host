@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Upload or revoke artifacts using a dedicated agent bearer token."""
 import argparse
+import getpass
 from pathlib import Path
 from urllib.parse import quote
 from artifact_host.client import api, upload, read_upload, ClientError
@@ -10,6 +11,7 @@ parser.add_argument('path', nargs='?', help='File or bundle directory to upload'
 parser.add_argument('--api', help='HTTPS API origin, or loopback HTTP through SSH')
 parser.add_argument('--slug', default='')
 parser.add_argument('--expires', type=float, help='Expiry Unix timestamp')
+parser.add_argument('--password', action='store_true', help='Prompt securely for an optional file read password')
 parser.add_argument('--revoke', metavar='ARTIFACT_ID', help='Revoke and delete an owned artifact')
 parser.add_argument('--alias', metavar='ARTIFACT_ID', help='Assign an owned artifact a short slug using --slug')
 args = parser.parse_args()
@@ -27,6 +29,9 @@ try:
         print('Artifact revoked')
     else:
         content, bundle = read_upload(args.path)
-        print(upload(Path(args.path).name, content, args.slug, bundle, args.expires, args.api)['url'])
+        password = getpass.getpass('File read password (8–128 characters): ') if args.password else ''
+        if args.password and not 8 <= len(password) <= 128:
+            parser.error('Read password must be 8–128 characters')
+        print(upload(Path(args.path).name, content, args.slug, bundle, args.expires, args.api, read_password=password)['url'])
 except (ClientError, OSError):
     parser.exit(1, 'Artifact operation failed. Check the token, endpoint, input, and server limits.\n')
