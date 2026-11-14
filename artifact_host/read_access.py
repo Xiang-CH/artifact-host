@@ -68,7 +68,7 @@ def unlock_cookie(response, row, paths, value=None):
     response.read_cookies_written = getattr(response, 'read_cookies_written', set()) | {row['id']}
 
 
-def migrate_cookies(response, cookies, readable):
+def migrate_cookies(response, cookies, readable, prefix=''):
     # A request header fits at most about 30 old root cookies. Migrate up to 20
     # at a time to bound response fields, preserving each signed expiry.
     written = getattr(response, 'read_cookies_written', set())
@@ -84,7 +84,7 @@ def migrate_cookies(response, cookies, readable):
                     continue
                 row = connection.execute('SELECT artifacts.*, aliases.slug AS short_slug FROM artifacts LEFT JOIN aliases ON aliases.artifact_id=artifacts.id WHERE artifacts.id=?', (identifier,)).fetchone()
                 if row is not None and row['read_password_hash'] and not row['revoked'] and (row['expires'] is None or row['expires'] > time.time()) and unlocked(row, cookies):
-                    paths = resource_paths(row, row['short_slug'] if readable else None)
+                    paths = resource_paths(row, row['short_slug'] if readable else None, prefix)
                     unlock_cookie(response, row, paths, value=cookies[name])
                 else:
                     response.delete_cookie(name, path='/', secure=True, httponly=True, samesite='Lax')

@@ -147,3 +147,13 @@ Jobs use hosted Ubuntu runners, temporary test data and synthetic credentials. T
 
 
 CI regressions also cover URL-safe artifact IDs beginning with a dash in CLI alias/revoke options, out-of-order dashboard list responses during category changes, and late metadata responses after logout. Dashboard lists apply only the latest request; logging out invalidates pending list responses.
+
+## Public paths on an existing portal
+
+To share an existing portal hostname, set `PUBLIC_URL=https://server.cxiang.site` and `PUBLIC_PATH=/a` in the private API and mounted public listener. URLs become `/a/<slug>/`; password redirects, cookies, CSP and protected resource bases retain that prefix. The public listener accepts only the configured mount. The fixed mount does not trust forwarded prefix headers. Keep the authenticated management platform on its separate Tailnet origin. Uploaded HTML remains sandboxed without same-origin privileges; the shared portal must not host privileged applications or sensitive browser credentials.
+
+Include `deployment/nginx-paths-http.conf.template` inside Nginx's `http {}` and `deployment/nginx-paths-locations.conf.template` inside the existing portal HTTPS server, replacing `@HOST@`. Preserve the `/a` prefix in `proxy_pass`. Set the remote MCP's `MCP_ORIGIN` to the portal origin; its endpoint remains `/mcp`. The locations preserve the portal root, apply independent read/MCP limits, suppress artifact request logs and disable MCP buffering. Existing dedicated-host templates remain supported. To retain existing Tailnet read/MCP URLs during migration, keep their original listeners and run the mounted public and new-origin MCP listeners on separate loopback ports, substituting those ports in the locations.
+
+Gunicorn uses two workers with four bounded threads each so Chromium speculative connections or partial headers cannot consume both workers. A real socket regression covers this alongside the existing slow-upload/revocation tests. Both Nginx templates rewrite same-host upstream HTTP redirects to HTTPS.
+
+The unittest suite covers root and mounted CLI/HTTP/MCP flows. CI runs the full Chromium flow at both mounts and validates both Nginx templates on disposable listeners.

@@ -28,14 +28,16 @@ class EndToEnd(unittest.TestCase):
         cls.temp=tempfile.TemporaryDirectory();cls.directory=Path(cls.temp.name)
         cls.private_port=free_port();cls.public_port=free_port()
         cls.api=f'http://127.0.0.1:{cls.private_port}'
-        cls.public=f'http://127.0.0.1:{cls.public_port}'
-        cls.env=dict(os.environ,ARTIFACT_DATA=str(cls.directory/'data'),PUBLIC_URL=cls.public,READABLE_URLS='1')
+        public_origin=f'http://127.0.0.1:{cls.public_port}'
+        cls.public=public_origin
+        cls.public_base=public_origin+os.environ.get('PUBLIC_PATH','')
+        cls.env=dict(os.environ,ARTIFACT_DATA=str(cls.directory/'data'),PUBLIC_URL=public_origin,READABLE_URLS='1')
         result=subprocess.run([sys.executable,'-m','artifact_host.app','init'],cwd=REPO,env=cls.env,capture_output=True,check=True)
         cls.owner=json.loads(result.stdout)['token'];cls.processes=[]
         cls.log=(cls.directory/'server.log').open('w+')
         for kind,port in [('private',cls.private_port),('public',cls.public_port)]:
             cls.processes.append(subprocess.Popen([sys.executable,'-m','gunicorn','--config','deployment/gunicorn.conf.py','--bind',f'127.0.0.1:{port}',f'artifact_host.app:{kind}_app'],cwd=REPO,env=cls.env,stdout=cls.log,stderr=cls.log))
-        for base in (cls.api,cls.public):
+        for base in (cls.api,cls.public_base):
             for attempt in range(100):
                 try:
                     with urlopen(base+'/health',timeout=1) as response:
@@ -60,6 +62,24 @@ class EndToEnd(unittest.TestCase):
     def agent(self):
         code,body,_=self.request('POST','/api/tokens',secret=self.owner)
         self.assertEqual(code,201);return json.loads(body)
+
+    def test_idle_http_connections_do_not_block_reader(self):
+        # Chromium can preconnect without completing a request. Two such
+        # connections must not occupy every public worker until its timeout.
+        connections = []
+        try:
+            for _ in range(2):
+                connection = socket.create_connection(('127.0.0.1', self.public_port), timeout=1)
+                connections.append(connection)
+                connection.sendall(b'GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n')
+                connection.settimeout(.1)
+                with self.assertRaises(socket.timeout):
+                    connection.recv(1)
+            with urlopen(self.public_base+'/health', timeout=1) as response:
+                self.assertEqual(response.status, 200)
+        finally:
+            for connection in connections:
+                connection.close()
 
     def test_cli_and_http_auth_and_revoke(self):
         agent=self.agent();file=self.directory/'report.md';file.write_text('# CLI report')

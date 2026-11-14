@@ -2,9 +2,11 @@
 import base64
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import zipfile
+from urllib.request import Request, urlopen
 from test_e2e import EndToEnd
 
 SESSION = 'artifact-security-regression'
@@ -49,7 +51,6 @@ def main():
         result['markdown_theme_persisted']=True
         result['markdown']=evaluate('({heading:document.querySelector("h1").textContent,image:document.querySelector("img").naturalWidth,xss:!!window.xss})')
         # Existing upload becomes password-protected, including relative assets.
-        from urllib.request import Request, urlopen
         access_path = EndToEnd.api + '/api/artifacts/' + markdown['id'] + '/access'
         with urlopen(Request(access_path, data=json.dumps({'password':'browser-test-password'}).encode(), headers={'Authorization':'Bearer '+EndToEnd.owner,'Content-Type':'application/json'}, method='POST')) as response:
             assert response.status == 200
@@ -90,7 +91,7 @@ def main():
         finally:
             external.shutdown();external.server_close()
         # The legacy URL remains functional after unlocking through its alias.
-        legacy=EndToEnd.public+'/s/'+markdown['id']+'/'+markdown['slug']+'/'
+        legacy=EndToEnd.public_base+'/s/'+markdown['id']+'/'+markdown['slug']+'/'
         browser('open',legacy)
         browser('wait','--fn','document.querySelector("img")?.naturalWidth===1')
         result['protected_legacy_assets']=True
@@ -239,6 +240,30 @@ def main():
         destination.parent.mkdir(exist_ok=True)
         destination.write_text(json.dumps(result,indent=2)+'\n')
         print('Browser security checks passed; evidence: docs/security-browser-check.json')
+    except BaseException:
+        # Capture only redacted server diagnostics and synthetic fixture state.
+        # Do this before teardown removes the temporary servers and their logs.
+        evidence = Path(__file__).resolve().parents[1]/'test-results'
+        evidence.mkdir(exist_ok=True)
+        suffix = 'paths' if os.environ.get('PUBLIC_PATH') else 'root'
+        EndToEnd.log.flush()
+        (evidence/('browser-server-'+suffix+'.log')).write_text((EndToEnd.directory/'server.log').read_text())
+        diagnostics = {'completed_checks': result}
+        for label, base in [('api', EndToEnd.api), ('read', EndToEnd.public_base)]:
+            try:
+                with urlopen(base+'/health', timeout=2) as response:
+                    diagnostics[label+'_health'] = response.status
+            except OSError as error:
+                diagnostics[label+'_health'] = type(error).__name__
+        try:
+            state = subprocess.run(['agent-browser','--session',SESSION,'eval',
+                                    'JSON.stringify({ready:document.readyState,title:document.title,images:[...document.images].map(i=>({complete:i.complete,width:i.naturalWidth}))})'],
+                                   capture_output=True,text=True,timeout=5)
+            diagnostics['browser_state'] = state.stdout.strip() if state.returncode == 0 else 'unavailable'
+        except subprocess.TimeoutExpired:
+            diagnostics['browser_state'] = 'unresponsive'
+        (evidence/('browser-failure-'+suffix+'.json')).write_text(json.dumps(diagnostics,indent=2)+'\n')
+        raise
     finally:
         try:
             browser('close')

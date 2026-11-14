@@ -32,6 +32,8 @@ server {
         proxy_buffers 4 32k;
         proxy_busy_buffers_size 64k;
         proxy_pass http://127.0.0.1:8792;
+        proxy_redirect default;
+        proxy_redirect http://@READ_HOST@/ https://@READ_HOST@/;
         proxy_set_header Host @READ_HOST@;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For "";
