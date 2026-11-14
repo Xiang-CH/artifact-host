@@ -3,6 +3,7 @@ const element = id => document.getElementById(id);
 let offset = 0;
 let files = [];
 let category = 'active';
+let listGeneration = 0;
 const theme = element('theme');
 try { theme.value = localStorage.getItem('artifact-theme') || 'system'; } catch (_) {}
 function applyTheme() {
@@ -11,9 +12,9 @@ function applyTheme() {
 applyTheme();
 theme.addEventListener('change', () => { applyTheme(); try { localStorage.setItem('artifact-theme', theme.value); } catch (_) {} });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
-async function api(method, path) {
-  const response = await fetch(path, {method, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
-    headers: {'X-Artifact-UI':'1', ...(element('key').value ? {Authorization: 'Bearer ' + element('key').value} : {})}});
+async function api(method, path, body) {
+  const response = await fetch(path, {method, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin', cache: 'no-store', redirect: 'error',
+    headers: {'X-Artifact-UI':'1', ...(body === undefined ? {} : {'Content-Type':'application/json'}), ...(element('key').value ? {Authorization: 'Bearer ' + element('key').value} : {})}});
   if (!response.ok) throw new Error(response.status === 401 ? '凭证无效或已撤销，请检查 Owner token。' : '操作失败：HTTP ' + response.status);
   return response.status === 204 ? null : response.json();
 }
@@ -51,11 +52,12 @@ function render() {
     info.append(name);row.append(info,text('span',kind,'muted'));
     row.append(text('span',file.size >= 1048576 ? (file.size/1048576).toFixed(1)+' MB' : Math.ceil(file.size/1024)+' KB','muted'));
     const status = state(file);
-    row.append(text('span',{active:'可访问',revoked:'已撤销',expired:'已到期'}[status],'state-'+status));
+    row.append(text('span',{active:file.password_protected ? '密码保护' : '公开',revoked:'已撤销',expired:'已到期'}[status],'state-'+status));
     const controls = document.createElement('span'); controls.className = 'row-actions';
     if (status === 'active') {
       const link = document.createElement('a'); link.textContent = '查看'; link.href = file.url;
       link.target = '_blank'; link.rel = 'noopener noreferrer';controls.append(link);
+      controls.append(action('权限', () => openReadAccess(file)));
     }
     const remove = action(file.revoked ? '清理文件' : '撤销', async () => {
       if (window.confirm('撤销这个分享链接并删除文件？已下载的副本无法收回。')) {
@@ -67,8 +69,10 @@ function render() {
   }
 }
 async function load() {
+  const generation = ++listGeneration;
   const artifacts = await api('GET', '/api/artifacts?category=' + category + '&offset=' + offset);
   const tokens = await api('GET', '/api/tokens');
+  if (generation !== listGeneration) return;
   files = artifacts;render();element('tokens').replaceChildren();
   element('connection').textContent = '已登录 · Owner';
   element('login-panel').classList.add('connected');
@@ -98,6 +102,7 @@ element('new-token').addEventListener('click', () => run(async () => {
 }));
 element('forget').addEventListener('click', () => run(async () => {
   await api('DELETE','/api/session');
+  listGeneration++;
   element('login-panel').classList.remove('connected');
   element('key').value = ''; files = [];element('artifacts').replaceChildren();
   element('tokens').replaceChildren();element('status').textContent = '';offset = 0;
@@ -108,3 +113,51 @@ element('previous').addEventListener('click', () => run(async () => { offset = M
 element('next').addEventListener('click', () => run(async () => { offset += 100; await load(); }));
 
 (async () => { try { await api('GET','/api/identity'); await load(); } catch (_) { /* First visit needs login. */ } })();
+
+let accessFile;
+let accessGeneration = 0;
+function openReadAccess(file) {
+  accessGeneration++;
+  accessFile = file;
+  element('access-save').disabled = false;
+  element('access-name').textContent = file.short_slug || file.entry;
+  element('read-private').checked = !!file.password_protected;
+  element('read-password').value = '';
+  element('access-error').textContent = '';
+  updateReadInput();element('read-access').showModal();
+}
+function updateReadInput() {
+  element('read-password').disabled = !element('read-private').checked;
+  element('read-password').required = element('read-private').checked;
+}
+element('read-private').addEventListener('change', updateReadInput);
+function closeReadAccess() {
+  accessGeneration++;
+  element('read-access').close();
+  element('read-password').value='';
+  element('access-save').disabled=false;
+}
+element('access-cancel').addEventListener('click', closeReadAccess);
+element('read-access').addEventListener('cancel', event => {event.preventDefault();closeReadAccess();});
+element('read-access').addEventListener('close', () => {
+  // A queued close event for A may arrive after B has already been opened.
+  if (!element('read-access').open) {
+    accessGeneration++;
+    element('read-password').value='';
+    element('access-save').disabled=false;
+  }
+});
+element('read-access-form').addEventListener('submit', async event => {
+  event.preventDefault();const submit = event.submitter || element('access-save');submit.disabled=true;
+  const generation = accessGeneration;
+  const fileId = accessFile.id;
+  try {
+    await api('POST','/api/artifacts/'+encodeURIComponent(fileId)+'/access', {password:element('read-private').checked ? element('read-password').value : ''});
+    await load();
+    if (generation === accessGeneration) closeReadAccess();
+  } catch (error) {
+    if (generation === accessGeneration) element('access-error').textContent=error.message;
+  } finally {
+    if (generation === accessGeneration) {element('read-password').value='';submit.disabled=false;}
+  }
+});

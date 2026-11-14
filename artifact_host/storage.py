@@ -51,6 +51,10 @@ def initialize():
         connection.execute('BEGIN IMMEDIATE')
         if 'slug' not in {r[1] for r in connection.execute('PRAGMA table_info(artifacts)')}:
             connection.execute('ALTER TABLE artifacts ADD COLUMN slug TEXT')
+        columns = {r[1] for r in connection.execute('PRAGMA table_info(artifacts)')}
+        for column in ('read_password_hash', 'read_cookie_key'):
+            if column not in columns:
+                connection.execute('ALTER TABLE artifacts ADD COLUMN ' + column + ' TEXT')
         connection.execute('CREATE UNIQUE INDEX IF NOT EXISTS artifact_slug ON artifacts(slug)')
         connection.execute('CREATE TABLE IF NOT EXISTS browser_sessions(hash TEXT PRIMARY KEY, token_id TEXT NOT NULL REFERENCES tokens(id) ON DELETE CASCADE, expires REAL NOT NULL)')
         connection.execute('CREATE TABLE IF NOT EXISTS aliases(slug TEXT PRIMARY KEY, artifact_id TEXT NOT NULL UNIQUE REFERENCES artifacts(id))')

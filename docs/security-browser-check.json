@@ -14,9 +14,21 @@
     "image": 1,
     "xss": false
   },
+  "password_remembered_with_sandboxed_assets": true,
+  "protected_own_script": true,
+  "cross_artifact_script_blocked": true,
+  "external_script_inclusion_blocked": true,
+  "protected_legacy_assets": true,
+  "protected_html_interactive": true,
+  "stale_list_response_ignored": true,
+  "stale_access_save_does_not_mutate_new_editor": true,
+  "canceled_save_refreshes_access_metadata": true,
   "token_created_once": true,
   "dashboard_no_raw_token_storage": true,
+  "unicode_password_dashboard_and_unlock": true,
+  "dashboard_access_dialog": true,
   "token_revoked": true,
   "artifact_revoked": true,
+  "late_list_response_after_logout_ignored": true,
   "forgotten": true
 }

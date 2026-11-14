@@ -15,6 +15,7 @@ from starlette.responses import JSONResponse
 
 from artifact_host.client import REQUEST_TOKEN, endpoint_url
 from artifact_host.mcp_server import upload_artifact, list_artifacts, revoke_artifact
+from artifact_host.rate_limit import RateLimit, client_address
 
 
 def threaded(function):
@@ -33,17 +34,25 @@ class GatewayBoundary:
         self.backend = backend
         self.body_limit = body_limit
         self.slots = anyio.Semaphore(active_limit)
+        burst = int(os.environ.get('MCP_AUTH_BURST', 30))
+        if not 1 <= burst <= 1000:
+            raise ValueError('Invalid MCP authentication burst')
+        self.attempts = RateLimit(burst, 1)  # Per source, 60/minute with a burst of 30.
+        self.total_attempts = RateLimit(120, 5)
+        self.trust_proxy = os.environ.get('ARTIFACT_TRUST_PROXY_IP') == '1'
 
     async def __call__(self, scope, receive, send):
         if scope['type'] != 'http':
             return await self.app(scope, receive, send)
 
-        async def reject(status, message):
+        async def reject(status, message, retry=None):
             headers = {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'}
             if status == 405:
                 headers['Allow'] = 'POST'
             if status == 401:
                 headers['WWW-Authenticate'] = 'Bearer realm="artifact-host"'
+            if status == 429:
+                headers['Retry-After'] = str(retry or 1)
             await JSONResponse({'error': message}, status_code=status, headers=headers)(scope, receive, send)
 
         headers = Headers(scope=scope)
@@ -65,6 +74,12 @@ class GatewayBoundary:
             return await JSONResponse({'ok': True}, headers={'Cache-Control': 'no-store'})(scope, receive, send)
         if scope['path'] != '/mcp':
             return await reject(404, 'Not found')
+        source = client_address(peer[0], headers, self.trust_proxy)
+        retry = self.attempts.check(source)
+        if not retry:
+            retry = self.total_attempts.check('all')
+        if retry:
+            return await reject(429, 'Too many authentication attempts', retry)
         authorization = headers.getlist('authorization')
         if len(authorization) != 1 or not re.fullmatch(r'Bearer [A-Za-z0-9_-]{43}', authorization[0]):
             return await reject(401, 'Active bearer token required')

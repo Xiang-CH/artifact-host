@@ -72,7 +72,7 @@ class EndToEnd(unittest.TestCase):
         items=json.loads(self.request('GET','/api/artifacts',secret=agent['token'])[1])
         identifier=next(item['id'] for item in items if urlsplit(item['url']).path==path)
         short_alias=subprocess.run([sys.executable,'artifact','--alias',identifier,'--slug','cli-report'],cwd=REPO,env=env,capture_output=True)
-        self.assertEqual(short_alias.returncode,0)
+        self.assertEqual(short_alias.returncode,0,short_alias.stderr.decode())
         no_auth=dict(env,ARTIFACT_TOKEN='')
         for args in ([str(file)],['--revoke',identifier]):
             result=subprocess.run([sys.executable,'artifact',*args],cwd=REPO,env=no_auth,capture_output=True)
@@ -137,6 +137,25 @@ class EndToEnd(unittest.TestCase):
             self.assertEqual(code,204);self.assertLess(time.monotonic()-start,3)
             sock.sendall(b'x'*9)
             self.assertIn(b'401',sock.recv(4096).split(b'\r\n')[0])
+
+    def test_slow_access_change_does_not_block_revocation(self):
+        agent=self.agent()
+        code,body,_=self.request('POST','/api/artifacts?name=slow-access.txt',b'unchanged',agent['token'])
+        self.assertEqual(code,201);artifact=json.loads(body)
+        payload=json.dumps({'password':'slow-access-password'}).encode()
+        with socket.create_connection(('127.0.0.1',self.private_port),timeout=5) as sock:
+            headers=(f'POST /api/artifacts/{artifact["id"]}/access HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {agent["token"]}\r\nContent-Type: application/json\r\nContent-Length: {len(payload)}\r\nConnection: close\r\n\r\n')
+            sock.sendall(headers.encode()+payload[:1])
+            time.sleep(.1)
+            start=time.monotonic()
+            code,_,_=self.request('DELETE','/api/tokens/'+agent['id'],secret=self.owner)
+            self.assertEqual(code,204);self.assertLess(time.monotonic()-start,3)
+            sock.sendall(payload[1:])
+            self.assertIn(b'401',sock.recv(4096).split(b'\r\n')[0])
+        code,body,_=self.request('GET','/api/artifacts',secret=self.owner)
+        self.assertEqual(code,200)
+        item=next(item for item in json.loads(body) if item['id']==artifact['id'])
+        self.assertFalse(item['password_protected'])
 
     def test_reverse_proxy_revocation_expiry_and_assets(self):
         public_port=self.public_port

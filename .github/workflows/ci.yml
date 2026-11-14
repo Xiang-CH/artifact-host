@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  unit:
+    name: Python ${{ matrix.python }} tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-mcp.txt
+      - name: Install service and MCP dependencies
+        run: python -m pip install -r requirements.txt -r requirements-mcp.txt
+      - name: Run every unittest, including real HTTP and MCP integration tests
+        run: |
+          mkdir -p test-results
+          python -m unittest discover -s tests -v 2>&1 | tee test-results/unittest.log
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-${{ matrix.python }}-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  browser:
+    name: Browser security and UI tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # Hosted Linux runners restrict Chromium's user-namespace sandbox.
+      # These flags apply only to this disposable CI browser process.
+      AGENT_BROWSER_ARGS: --no-sandbox,--disable-dev-shm-usage
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-mcp.txt
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Install test dependencies and Chromium
+        run: |
+          python -m pip install -r requirements.txt -r requirements-mcp.txt
+          npm install --global agent-browser@0.38.2
+          agent-browser install --with-deps
+      - name: Verify browser startup
+        run: |
+          agent-browser --session ci-startup open about:blank
+          agent-browser --session ci-startup close
+      - name: Run the complete browser regression flow
+        run: |
+          mkdir -p test-results
+          rm -f docs/security-browser-check.json
+          python tests/browser_check.py 2>&1 | tee test-results/browser.log
+          cp docs/security-browser-check.json test-results/browser-evidence.json
+      - name: Upload browser output and fresh evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  nginx:
+    name: Nginx integration tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install Nginx and OpenSSL
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends nginx openssl
+      - name: Exercise TLS, migration headers and both ingress rate limits
+        run: |
+          mkdir -p test-results
+          python tests/nginx_check.py 2>&1 | tee test-results/nginx.log
+      - name: Upload Nginx output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nginx-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  all-tests:
+    name: All tests
+    if: always()
+    needs: [unit, browser, nginx]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    env:
+      UNIT_RESULT: ${{ needs.unit.result }}
+      BROWSER_RESULT: ${{ needs.browser.result }}
+      NGINX_RESULT: ${{ needs.nginx.result }}
+    steps:
+      - name: Require every test group to pass
+        run: |
+          echo "Python: $UNIT_RESULT; browser: $BROWSER_RESULT; Nginx: $NGINX_RESULT"
+          [[ "$UNIT_RESULT" == success && "$BROWSER_RESULT" == success && "$NGINX_RESULT" == success ]]

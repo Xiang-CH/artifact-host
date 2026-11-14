@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Upload or revoke artifacts using a dedicated agent bearer token."""
 import argparse
+import getpass
+import re
+import sys
 from pathlib import Path
 from urllib.parse import quote
 from artifact_host.client import api, upload, read_upload, ClientError
@@ -10,9 +13,26 @@ parser.add_argument('path', nargs='?', help='File or bundle directory to upload'
 parser.add_argument('--api', help='HTTPS API origin, or loopback HTTP through SSH')
 parser.add_argument('--slug', default='')
 parser.add_argument('--expires', type=float, help='Expiry Unix timestamp')
+parser.add_argument('--password', action='store_true', help='Prompt securely for an optional file read password')
 parser.add_argument('--revoke', metavar='ARTIFACT_ID', help='Revoke and delete an owned artifact')
 parser.add_argument('--alias', metavar='ARTIFACT_ID', help='Assign an owned artifact a short slug using --slug')
-args = parser.parse_args()
+def artifact_arguments(values):
+    # Valid URL-safe identifiers can start with '-'. Bind those values to the
+    # known ID options instead of letting argparse interpret them as flags.
+    normalized = []
+    index = 0
+    while index < len(values):
+        if values[index] in ('--alias', '--revoke') and index + 1 < len(values):
+            value = values[index + 1]
+            if value.startswith('-') and re.fullmatch(r'[A-Za-z0-9_-]{43}', value):
+                normalized.append(values[index] + '=' + value)
+                index += 2
+                continue
+        normalized.append(values[index])
+        index += 1
+    return normalized
+
+args = parser.parse_args(artifact_arguments(sys.argv[1:]))
 if sum(bool(x) for x in (args.path, args.revoke, args.alias)) != 1:
     parser.error('Supply a path, --revoke ARTIFACT_ID, or --alias ARTIFACT_ID')
 if args.alias and not args.slug:
@@ -27,6 +47,9 @@ try:
         print('Artifact revoked')
     else:
         content, bundle = read_upload(args.path)
-        print(upload(Path(args.path).name, content, args.slug, bundle, args.expires, args.api)['url'])
+        password = getpass.getpass('File read password (8–128 characters): ') if args.password else ''
+        if args.password and not 8 <= len(password) <= 128:
+            parser.error('Read password must be 8–128 characters')
+        print(upload(Path(args.path).name, content, args.slug, bundle, args.expires, args.api, read_password=password)['url'])
 except (ClientError, OSError):
     parser.exit(1, 'Artifact operation failed. Check the token, endpoint, input, and server limits.\n')

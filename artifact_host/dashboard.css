@@ -29,3 +29,6 @@ nav a{align-items:center;gap:16px;padding-inline:14px}nav a span{width:16px;text
 .muted{overflow:hidden;text-overflow:ellipsis}
 @media(max-width:600px){.topbar{height:auto;min-height:76px;flex-wrap:wrap;padding-block:14px;gap:12px}.topbar-controls{width:100%;justify-content:space-between}.session-controls #key{flex-basis:100%;width:100%}.session-controls{gap:10px}.heading{gap:16px}.heading button{white-space:nowrap}.pagination{gap:12px;flex-wrap:wrap}.token-row{gap:12px;flex-wrap:wrap}}
 .file-icon{width:40px;height:44px;letter-spacing:.1px}
+
+dialog{background:#fff;color:inherit;border:1px solid var(--line,#454f60);border-radius:8px;width:min(440px,calc(100vw - 40px));padding:28px}:root[data-theme=dark] dialog{background:#1e232c;border-color:#454f60}dialog::backdrop{background:#0008}dialog h2{margin-top:0}dialog p{font-size:13px;line-height:1.7}dialog label{display:block;margin:18px 0 8px}dialog input[type=password]{width:100%}dialog input[type=checkbox]{min-height:0;width:16px;height:16px;vertical-align:middle;margin-right:8px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}
+.table-header,.file-row{grid-template-columns:minmax(180px,1fr) 55px 65px 80px 144px}
