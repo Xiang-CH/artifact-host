@@ -2,6 +2,8 @@
 """Upload or revoke artifacts using a dedicated agent bearer token."""
 import argparse
 import getpass
+import re
+import sys
 from pathlib import Path
 from urllib.parse import quote
 from artifact_host.client import api, upload, read_upload, ClientError
@@ -14,7 +16,23 @@ parser.add_argument('--expires', type=float, help='Expiry Unix timestamp')
 parser.add_argument('--password', action='store_true', help='Prompt securely for an optional file read password')
 parser.add_argument('--revoke', metavar='ARTIFACT_ID', help='Revoke and delete an owned artifact')
 parser.add_argument('--alias', metavar='ARTIFACT_ID', help='Assign an owned artifact a short slug using --slug')
-args = parser.parse_args()
+def artifact_arguments(values):
+    # Valid URL-safe identifiers can start with '-'. Bind those values to the
+    # known ID options instead of letting argparse interpret them as flags.
+    normalized = []
+    index = 0
+    while index < len(values):
+        if values[index] in ('--alias', '--revoke') and index + 1 < len(values):
+            value = values[index + 1]
+            if value.startswith('-') and re.fullmatch(r'[A-Za-z0-9_-]{43}', value):
+                normalized.append(values[index] + '=' + value)
+                index += 2
+                continue
+        normalized.append(values[index])
+        index += 1
+    return normalized
+
+args = parser.parse_args(artifact_arguments(sys.argv[1:]))
 if sum(bool(x) for x in (args.path, args.revoke, args.alias)) != 1:
     parser.error('Supply a path, --revoke ARTIFACT_ID, or --alias ARTIFACT_ID')
 if args.alias and not args.slug:

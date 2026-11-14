@@ -41,3 +41,31 @@ class Client(unittest.TestCase):
             finally:redirect.shutdown();redirect.server_close()
         receiver.shutdown();receiver.server_close()
         self.assertEqual(seen,[])
+
+    def test_cli_accepts_dash_leading_artifact_ids(self):
+        seen=[]
+        class Receiver(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen.append((self.command,self.path,self.headers.get('Authorization')))
+                self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
+                self.wfile.write(b'{"url":"https://read.example/report/"}')
+            do_DELETE=do_POST
+            def log_message(self,*args):pass
+        receiver=ThreadingHTTPServer(('127.0.0.1',0),Receiver)
+        threading.Thread(target=receiver.serve_forever,daemon=True).start()
+        repo=Path(__file__).resolve().parents[1]
+        secret='synthetic-test-token'
+        env=dict(os.environ,ARTIFACT_API=f'http://127.0.0.1:{receiver.server_port}',ARTIFACT_TOKEN=secret)
+        try:
+            for identifier in ('-'+'a'*41+'A','--'+'b'*40+'A'):
+                for option in ('--alias','--revoke'):
+                    for args in ([option,identifier],[option+'='+identifier]):
+                        if option=='--alias':args+=['--slug','report']
+                        result=subprocess.run([sys.executable,'artifact',*args],cwd=repo,env=env,capture_output=True,text=True,timeout=10)
+                        self.assertEqual(result.returncode,0,result.stderr)
+                        method,path,authorization=seen[-1]
+                        self.assertEqual(method,'POST' if option=='--alias' else 'DELETE')
+                        self.assertEqual(path,'/api/artifacts/'+identifier+('/alias?slug=report' if option=='--alias' else ''))
+                        self.assertEqual(authorization,'Bearer '+secret)
+        finally:
+            receiver.shutdown();receiver.server_close()
