@@ -58,6 +58,10 @@ jobs:
     name: Browser security and UI tests
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      # Hosted Linux runners restrict Chromium's user-namespace sandbox.
+      # These flags apply only to this disposable CI browser process.
+      AGENT_BROWSER_ARGS: --no-sandbox,--disable-dev-shm-usage
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,6 +81,10 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-mcp.txt
           npm install --global agent-browser@0.38.2
           agent-browser install --with-deps
+      - name: Verify browser startup
+        run: |
+          agent-browser --session ci-startup open about:blank
+          agent-browser --session ci-startup close
       - name: Run the complete browser regression flow
         run: |
           mkdir -p test-results

@@ -9,7 +9,10 @@ from test_e2e import EndToEnd
 
 SESSION = 'artifact-security-regression'
 def browser(*args):
-    result = subprocess.run(['agent-browser','--session',SESSION,*args],check=True,capture_output=True,text=True,timeout=30)
+    result = subprocess.run(['agent-browser','--session',SESSION,*args],capture_output=True,text=True,timeout=30)
+    if result.returncode:
+        # Report the tool's diagnostic without echoing arguments/passwords.
+        raise RuntimeError('agent-browser '+args[0]+' failed: '+(result.stderr or result.stdout).strip())
     return result.stdout.strip()
 def evaluate(code):
     value = json.loads(browser('eval','(async()=>JSON.stringify(await ('+code+')))()'))
@@ -194,7 +197,9 @@ def main():
         destination.write_text(json.dumps(result,indent=2)+'\n')
         print('Browser security checks passed; evidence: docs/security-browser-check.json')
     finally:
-        browser('close')
-        EndToEnd.tearDownClass()
+        try:
+            browser('close')
+        finally:
+            EndToEnd.tearDownClass()
 
 if __name__=='__main__':main()
