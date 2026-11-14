@@ -2,6 +2,7 @@
 import base64
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import zipfile
@@ -239,6 +240,30 @@ def main():
         destination.parent.mkdir(exist_ok=True)
         destination.write_text(json.dumps(result,indent=2)+'\n')
         print('Browser security checks passed; evidence: docs/security-browser-check.json')
+    except BaseException:
+        # Capture only redacted server diagnostics and synthetic fixture state.
+        # Do this before teardown removes the temporary servers and their logs.
+        evidence = Path(__file__).resolve().parents[1]/'test-results'
+        evidence.mkdir(exist_ok=True)
+        suffix = 'paths' if os.environ.get('PUBLIC_PATH') else 'root'
+        EndToEnd.log.flush()
+        (evidence/('browser-server-'+suffix+'.log')).write_text((EndToEnd.directory/'server.log').read_text())
+        diagnostics = {'completed_checks': result}
+        for label, base in [('api', EndToEnd.api), ('read', EndToEnd.public_base)]:
+            try:
+                with urlopen(base+'/health', timeout=2) as response:
+                    diagnostics[label+'_health'] = response.status
+            except OSError as error:
+                diagnostics[label+'_health'] = type(error).__name__
+        try:
+            state = subprocess.run(['agent-browser','--session',SESSION,'eval',
+                                    'JSON.stringify({ready:document.readyState,title:document.title,images:[...document.images].map(i=>({complete:i.complete,width:i.naturalWidth}))})'],
+                                   capture_output=True,text=True,timeout=5)
+            diagnostics['browser_state'] = state.stdout.strip() if state.returncode == 0 else 'unavailable'
+        except subprocess.TimeoutExpired:
+            diagnostics['browser_state'] = 'unresponsive'
+        (evidence/('browser-failure-'+suffix+'.json')).write_text(json.dumps(diagnostics,indent=2)+'\n')
+        raise
     finally:
         try:
             browser('close')
